@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["sim", "server", "bindings", "client"]
+# `cargo build` at the root builds the native pieces. The server module is built
+# by `spacetime build` (wasm only), see the Makefile.
+default-members = ["sim", "bindings", "client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[workspace.dependencies]
+promptnite-sim = { path = "sim" }
+promptnite-bindings = { path = "bindings" }
+
+# Light optimisation for our own code, full optimisation for dependencies:
+# keeps Bevy playable in dev builds without slowing down incremental rebuilds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# `trunk build --release` / `spacetime publish` use this.
+[profile.release]
+opt-level = "s"
+lto = "thin"

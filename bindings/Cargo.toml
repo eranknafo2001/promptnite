@@ -1,0 +1,13 @@
+[package]
+name = "promptnite-bindings"
+description = "Generated SpacetimeDB client bindings for the server module, shared by the game client and the agent worker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+spacetimedb-sdk = "2.15.*"
+
+# In the browser the SDK talks through web-sys WebSockets instead of tokio.
+[target.wasm32-unknown-unknown.dependencies]
+spacetimedb-sdk = { version = "2.15.*", features = ["browser"] }

@@ -1,0 +1,5 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+AGENT_SECRET=dev-secret
+# One of:
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=

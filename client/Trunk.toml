@@ -1,0 +1,9 @@
+# Browser build of the client: `trunk serve` (dev) or `trunk build --release`.
+# Run trunk from this directory so .cargo/config.toml here applies.
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080

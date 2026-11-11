@@ -1,0 +1,11 @@
+[package]
+name = "promptnite-sim"
+description = "Deterministic arena rules + sandboxed Lua bot runner. Pure Rust, so it builds for native and wasm32-unknown-unknown."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Pure-Rust Lua VM with fuel metering. No C toolchain needed, which is what lets
+# the same code run inside the SpacetimeDB module (wasm) and, later, the browser.
+piccolo = "0.3"

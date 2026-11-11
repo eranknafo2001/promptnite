@@ -1,0 +1,50 @@
+# Local development. Each long-running target wants its own terminal:
+#
+#   make server     local SpacetimeDB
+#   make publish    build + upload the module (again after changing server/ or sim/)
+#   make client     desktop client      |  make web   browser client
+#   make worker     the agent (Cloudflare Worker) on http://127.0.0.1:8787
+#
+# Without AGENT_URL the module hands every prompt the example bot. To use the
+# real agent, publish with the Worker's public URL (see README):
+#
+#   make publish AGENT_URL=https://promptnite-agent.<you>.workers.dev
+#
+# AGENT_SECRET is the shared password between the module and the agent worker.
+
+DB           ?= promptnite
+STDB_ADDR    ?= 127.0.0.1:3210
+AGENT_SECRET ?= dev-secret
+AGENT_URL    ?=
+
+.PHONY: server publish bindings worker worker-deploy client web web-release test
+
+server:
+	spacetime start --listen-addr $(STDB_ADDR)
+
+publish:
+	AGENT_URL=$(AGENT_URL) AGENT_SECRET=$(AGENT_SECRET) spacetime publish $(DB) --yes
+
+# Regenerate bindings/ after changing tables or reducers in server/.
+bindings:
+	spacetime generate --lang rust --out-dir bindings/src/module_bindings --module-path server --yes
+
+# Needs worker/.dev.vars (copy worker/.dev.vars.example) and `npm install`.
+worker:
+	cd worker && npm run dev
+
+worker-deploy:
+	cd worker && npm run deploy
+
+client:
+	PROMPTNITE_URI=http://$(STDB_ADDR) PROMPTNITE_DB=$(DB) cargo run -p promptnite
+
+# Needs `cargo install --locked trunk`. Serves http://127.0.0.1:8080
+web:
+	cd client && trunk serve
+
+web-release:
+	cd client && trunk build --release
+
+test:
+	cargo test

@@ -1,0 +1,5 @@
+/target
+/client/dist
+# Per-machine SpacetimeDB CLI state (which database `spacetime` talks to).
+spacetime.local.json
+.DS_Store

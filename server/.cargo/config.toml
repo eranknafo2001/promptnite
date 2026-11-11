@@ -1,0 +1,8 @@
+# The module runs in SpacetimeDB's wasm sandbox: no OS, no JS. Tell getrandom 0.3
+# to use the hook defined in src/entropy.rs instead of failing the build.
+#
+# This file only applies when cargo is run from server/ (which is what
+# `spacetime build` / `spacetime publish` do). The browser client needs the
+# opposite setting ("wasm_js"), see client/.cargo/config.toml.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']

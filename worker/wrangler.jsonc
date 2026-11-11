@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "promptnite-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "dev": { "ip": "127.0.0.1", "port": 8787 },
+  // Where the game module lives. These are the local-development values;
+  // change them (or use `wrangler deploy --var`) for a hosted database.
+  "vars": {
+    "SPACETIMEDB_URI": "http://127.0.0.1:3210",
+    "SPACETIMEDB_DB": "promptnite"
+  }
+  // Secrets are not listed here. Locally they come from .dev.vars; for a
+  // deployed Worker use `wrangler secret put <NAME>`:
+  //   AGENT_SECRET                         same value the module was published with
+  //   ANTHROPIC_API_KEY or OPENAI_API_KEY
+  // Optional plain vars: PROMPTNITE_PROVIDER, PROMPTNITE_MODEL, OPENAI_BASE_URL
+}

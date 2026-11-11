@@ -1,0 +1,7 @@
+# Browser build: let getrandom 0.3 use the Web Crypto API.
+#
+# This file only applies when cargo is run from client/ (which is what `trunk`
+# does). The server module is also wasm32-unknown-unknown but must NOT use this
+# backend, see server/.cargo/config.toml.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="wasm_js"']

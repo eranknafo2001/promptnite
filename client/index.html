@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>promptnite</title>
+    <!-- Trunk compiles the client to wasm and injects the loader here. -->
+    <link data-trunk rel="rust" data-bin="promptnite" data-wasm-opt="s" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #121418;
+        overflow: hidden;
+      }
+      /* Bevy sizes the canvas to its parent (fit_canvas_to_parent). */
+      canvas {
+        display: block;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+  </body>
+</html>
