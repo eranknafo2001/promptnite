@@ -96,12 +96,12 @@ bot. Everything else floats over it; there are no panels.
   above the box and the player prompts again.
 - **Status line**: after sending, the box is replaced by one line at the
   bottom ("Your agent is building your bot…", "Waiting for Ada…").
-- **Room and players**: top right. First the room id and its settings (match
-  length, house bot or not), then everyone in the room who is online, each
-  with their bot's colour, who the owner is, and what they are doing: writing
-  a prompt, agent is building, agent failed, ready, fighting, knocked out,
-  won, still standing, or watching (they joined while a match was already
-  running). The house bot is not listed.
+- **Room and players**: top right. First the room id and its match length,
+  then everyone in the room who is online, each with their bot's colour, who
+  the owner is, and what they are doing: writing a prompt, agent is building,
+  agent failed, ready, fighting, knocked out, won, still standing, or watching
+  (they joined while a match was already running). The house bot is listed
+  too while it is part of the game.
 - **Room settings**: top left, for the room's owner only and only during
   prompting: the controls for match length and house bot.
 - **Arena overlays**: name and health bar above each bot, the big countdown

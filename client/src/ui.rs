@@ -589,18 +589,7 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     let mut rows = vec![(
         None,
         left(format!("Room {}", game.code)),
-        right(
-            format!(
-                "{} s  ·  {}",
-                game.match_secs,
-                if game.house_bot {
-                    "house bot"
-                } else {
-                    "no house bot"
-                }
-            ),
-            muted,
-        ),
+        right(format!("{} s matches", game.match_secs), muted),
     )];
     for player in snapshot.players.iter().filter(|player| player.online) {
         let mut name = player.name.clone();
@@ -610,10 +599,27 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         if player.id == game.owner {
             name += "  ·  owner";
         }
-        let (state, color) = player_state(snapshot, replay, player);
+        let status = snapshot.submission_of(player.id).map(|s| s.status);
+        let (state, color) = bot_state(game, replay, player.id, status);
         rows.push((
             Some(bot_color(player.id)),
             left(name),
+            right(state.into(), color),
+        ));
+    }
+    // The house bot is listed while it is part of the game: switched on for
+    // the match being prepared, or fighting in the one on screen.
+    let house_bot = match game.phase {
+        Phase::Prompting => game.house_bot,
+        _ => replay.bots.iter().any(|bot| bot.id == HOUSE_BOT_ID),
+    };
+    if house_bot {
+        // It never has to write anything.
+        let ready = Some(SubmissionStatus::Ready);
+        let (state, color) = bot_state(game, replay, HOUSE_BOT_ID, ready);
+        rows.push((
+            Some(bot_color(HOUSE_BOT_ID)),
+            left(snapshot.name_of(HOUSE_BOT_ID)),
             right(state.into(), color),
         ));
     }
@@ -658,19 +664,19 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     }
 }
 
-/// What one player is doing right now, in a word or two, and its colour.
-fn player_state(
-    snapshot: &Snapshot,
+/// What one player (or the house bot) is doing right now, in a word or two,
+/// and its colour. `status` is where their prompt for this round stands.
+fn bot_state(
+    game: &Room,
     replay: &Replay,
-    player: &Player,
+    id: u32,
+    status: Option<SubmissionStatus>,
 ) -> (&'static str, egui::Color32) {
     let muted = egui::Color32::from_white_alpha(150);
     let good = egui::Color32::LIGHT_GREEN;
     let bad = egui::Color32::LIGHT_RED;
-    let game = &snapshot.game;
-    let in_match = replay.bots.iter().find(|bot| bot.id == player.id);
+    let in_match = replay.bots.iter().find(|bot| bot.id == id);
     let down = in_match.is_some_and(|bot| bot.action == BotAction::Dead);
-    let status = snapshot.submission_of(player.id).map(|s| s.status);
 
     match (game.phase, status) {
         (Phase::Prompting, None) => ("writing a prompt", muted),
@@ -682,7 +688,7 @@ fn player_state(
             ("watching", muted)
         }
         (Phase::Countdown, _) => ("ready", good),
-        (Phase::Results, _) if game.winner == Some(player.id) => ("won", good),
+        (Phase::Results, _) if game.winner == Some(id) => ("won", good),
         (Phase::Fighting | Phase::Results, _) if down => ("knocked out", bad),
         (Phase::Fighting, _) => ("fighting", egui::Color32::WHITE),
         (Phase::Results, _) => ("still standing", muted),
