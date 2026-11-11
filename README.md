@@ -80,16 +80,21 @@ the module build (and that `bindings/` matches it), the browser build, and the
 worker's typecheck.
 
 Every push to `main` runs the same checks and then
-[deploys](.github/workflows/deploy.yml): the agent to Cloudflare Workers, the
-module to SpacetimeDB, and the browser client to Cloudflare Pages. A module
-change that would lose data is not published; do that one by hand.
+[deploys](.github/workflows/deploy.yml): the agent to Cloudflare Workers and
+the module to SpacetimeDB. A module change that would lose data is not
+published; do that one by hand.
+
+The browser client is not deployed. Each run on `main` builds it with the
+hosted database as its default and keeps it as the `web-dist` artifact; that
+zip has `index.html` at its top level, which is what itch.io wants for an
+HTML5 game.
 
 Repository secrets (Settings → Secrets and variables → Actions):
 
 | Secret | |
 | --- | --- |
 | `SPACETIMEDB_TOKEN` | Who publishes the module. `spacetime login`, then `spacetime login show --token` |
-| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token that can edit Workers Scripts and Cloudflare Pages |
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token that can edit Workers Scripts |
 | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account to deploy to |
 | `AGENT_SECRET` | Any password you make up; given to both the module and the worker |
 | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | The model that writes the bots |
@@ -100,7 +105,6 @@ Optional repository variables, with their defaults:
 | --- | --- |
 | `SPACETIMEDB_URI` | `https://maincloud.spacetimedb.com` |
 | `SPACETIMEDB_DB` | `promptnite`. Database names are shared by everyone on the host, so pick another if it is taken |
-| `PAGES_PROJECT` | `promptnite`, the Cloudflare Pages project |
 | `AGENT_URL` | The worker's `workers.dev` address. Set it if the worker has a custom domain |
 | `PROMPTNITE_PROVIDER`, `PROMPTNITE_MODEL`, `OPENAI_BASE_URL` | Unset, see the table above |
 

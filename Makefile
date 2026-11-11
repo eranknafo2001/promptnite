@@ -46,8 +46,9 @@ client:
 web:
 	cd client && trunk serve
 
+# Relative paths, so client/dist also works from a subfolder (itch.io).
 web-release:
-	cd client && trunk build --release
+	cd client && trunk build --release --public-url ./
 
 test:
 	cargo test

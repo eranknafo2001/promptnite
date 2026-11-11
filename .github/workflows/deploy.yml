@@ -1,8 +1,10 @@
 name: Deploy
 
-# Every push to main: run CI, then deploy the agent worker (Cloudflare Workers),
-# the module (SpacetimeDB) and the browser client (Cloudflare Pages), in that
-# order. Secrets and optional variables are listed in the README.
+# Every push to main: run CI, then deploy the agent worker (Cloudflare Workers)
+# and the module (SpacetimeDB), in that order. The browser client is not
+# deployed: CI builds it against the hosted database and keeps it as the
+# `web-dist` artifact, ready to upload to itch.io. Secrets and optional
+# variables are listed in the README.
 on:
   push:
     branches: [main]
@@ -142,38 +144,3 @@ jobs:
           spacetime publish "$SPACETIMEDB_DB" --server "$SPACETIMEDB_URI" --module-path server \
             --yes=remote,skip-login,break-clients
           echo "Module: $SPACETIMEDB_DB on $SPACETIMEDB_URI" >> "$GITHUB_STEP_SUMMARY"
-
-  web:
-    name: Deploy browser client
-    # After the module, so the client never runs ahead of the schema it expects.
-    needs: module
-    runs-on: ubuntu-latest
-    env:
-      PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'promptnite' }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
-      - name: Install wrangler
-        working-directory: worker
-        run: npm ci
-      # Built by the CI job with the hosted database as its default.
-      - uses: actions/download-artifact@v8
-        with:
-          name: web-dist
-          path: client/dist
-      - name: Deploy
-        run: |
-          wrangler=./worker/node_modules/.bin/wrangler
-          # First deploy only; afterwards the project already exists.
-          "$wrangler" pages project create "$PAGES_PROJECT" --production-branch main \
-            || echo "Pages project '$PAGES_PROJECT' not created (it probably exists already)."
-          "$wrangler" pages deploy client/dist --project-name "$PAGES_PROJECT" --branch main \
-            --commit-hash "$GITHUB_SHA" --commit-dirty=true | tee "$RUNNER_TEMP/pages.log"
-          url="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' "$RUNNER_TEMP/pages.log" | tail -n 1 || true)"
-          echo "Browser client: ${url:-see the Cloudflare dashboard}" >> "$GITHUB_STEP_SUMMARY"
