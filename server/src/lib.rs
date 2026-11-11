@@ -31,9 +31,9 @@ use promptnite_sim::{self as sim, rules};
 use serde_json::json;
 use spacetimedb::{
     Identity, ProcedureContext, ReducerContext, ScheduleAt, SpacetimeType, Table, TimeDuration,
-    Timestamp, ViewContext,
+    Timestamp,
     http::{Request, Timeout},
-    procedure, reducer, table, view,
+    procedure, reducer, table,
 };
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
@@ -164,8 +164,9 @@ pub struct Submission {
     error: String,
 }
 
-/// A player's prompt and the Lua their agent wrote. Private: read it through
-/// the `my_script` view.
+/// A player's prompt and the Lua their agent wrote. Private, and on purpose
+/// not exposed through any view: players never see the script, not even their
+/// own. Clients only get the public `submission` status.
 #[table(accessor = bot_script)]
 pub struct BotScript {
     #[primary_key]
@@ -283,15 +284,6 @@ pub struct PhaseTimer {
     to: Phase,
     /// Carried along so the winner isn't public before the replay ends.
     winner: Option<u32>,
-}
-
-// Views --------------------------------------------------------------------
-
-/// The caller's own prompt + script for the current round.
-#[view(accessor = my_script, public)]
-fn my_script(ctx: &ViewContext) -> Option<BotScript> {
-    let player = ctx.db.player().identity().find(ctx.sender())?;
-    ctx.db.bot_script().player_id().find(player.id)
 }
 
 // Lifecycle ----------------------------------------------------------------

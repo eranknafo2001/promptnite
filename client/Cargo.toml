@@ -23,4 +23,4 @@ bevy_stdb = "0.14"
 
 [target.wasm32-unknown-unknown.dependencies]
 bevy_stdb = { version = "0.14", features = ["browser"] }
-web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "UrlSearchParams"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "UrlSearchParams", "Navigator"] }

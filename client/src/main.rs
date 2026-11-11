@@ -6,7 +6,7 @@
 //!
 //!   net.rs    connection to SpacetimeDB, subscriptions, identity token
 //!   arena.rs  3D scene and match replay
-//!   ui.rs     egui panels: player list, script viewer, prompt bar
+//!   ui.rs     egui overlay: name screen, prompt box, status lines
 
 mod arena;
 mod net;

@@ -27,7 +27,6 @@ enum SubKey {
     Submissions,
     Frames,
     Faults,
-    MyScript,
 }
 
 /// Where we are connecting to, for display.
@@ -123,8 +122,6 @@ fn on_connected(
             .player()
             .r#where(|player| player.identity.eq(identity))
     });
-    // A view: the server only ever sends us our own row.
-    subs.subscribe_query(SubKey::MyScript, |q| q.from.my_script());
 }
 
 fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
