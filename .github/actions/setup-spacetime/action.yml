@@ -1,0 +1,25 @@
+name: Set up SpacetimeDB CLI
+description: Install the `spacetime` CLI at the version the module is written for.
+
+inputs:
+  version:
+    description: SpacetimeDB version. Keep in step with `spacetimedb` in server/Cargo.toml.
+    default: "2.15.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install spacetime
+      shell: bash
+      env:
+        SPACETIME_VERSION: ${{ inputs.version }}
+      run: |
+        curl -sSf https://install.spacetimedb.com | sh -s -- --yes
+        export PATH="$HOME/.local/bin:$PATH"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # The installer fetches the latest release; pin to ours.
+        if ! spacetime version list | grep -qF "$SPACETIME_VERSION"; then
+          spacetime version install "$SPACETIME_VERSION" --yes
+        fi
+        spacetime version use "$SPACETIME_VERSION"
+        spacetime --version
