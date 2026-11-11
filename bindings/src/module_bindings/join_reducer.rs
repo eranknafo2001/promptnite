@@ -8,11 +8,15 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 #[sats(crate = __lib)]
 pub(super) struct JoinArgs {
     pub name: String,
+    pub room: String,
 }
 
 impl From<JoinArgs> for super::Reducer {
     fn from(args: JoinArgs) -> Self {
-        Self::Join { name: args.name }
+        Self::Join {
+            name: args.name,
+            room: args.room,
+        }
     }
 }
 
@@ -31,8 +35,8 @@ pub trait join {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`join:join_then`] to run a callback after the reducer completes.
-    fn join(&self, name: String) -> __sdk::Result<()> {
-        self.join_then(name, |_, _| {})
+    fn join(&self, name: String, room: String) -> __sdk::Result<()> {
+        self.join_then(name, room, |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `join` to run as soon as possible,
@@ -44,12 +48,11 @@ pub trait join {
     fn join_then(
         &self,
         name: String,
+        room: String,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()>;
 }
 
@@ -57,14 +60,13 @@ impl join for super::RemoteReducers {
     fn join_then(
         &self,
         name: String,
+        room: String,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()> {
         self.imp
-            .invoke_reducer_with_callback(JoinArgs { name }, callback)
+            .invoke_reducer_with_callback(JoinArgs { name, room }, callback)
     }
 }

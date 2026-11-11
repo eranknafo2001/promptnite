@@ -7,6 +7,8 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub struct MatchFault {
+    pub id: u64,
+    pub room_id: u32,
     pub player_id: u32,
     pub tick: u32,
     pub message: String,
@@ -20,6 +22,8 @@ impl __sdk::InModule for MatchFault {
 ///
 /// Provides typed access to columns for query building.
 pub struct MatchFaultCols {
+    pub id: __sdk::__query_builder::Col<MatchFault, u64>,
+    pub room_id: __sdk::__query_builder::Col<MatchFault, u32>,
     pub player_id: __sdk::__query_builder::Col<MatchFault, u32>,
     pub tick: __sdk::__query_builder::Col<MatchFault, u32>,
     pub message: __sdk::__query_builder::Col<MatchFault, String>,
@@ -29,6 +33,8 @@ impl __sdk::__query_builder::HasCols for MatchFault {
     type Cols = MatchFaultCols;
     fn cols(table_name: &'static str) -> Self::Cols {
         MatchFaultCols {
+            id: __sdk::__query_builder::Col::new(table_name, "id"),
+            room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             player_id: __sdk::__query_builder::Col::new(table_name, "player_id"),
             tick: __sdk::__query_builder::Col::new(table_name, "tick"),
             message: __sdk::__query_builder::Col::new(table_name, "message"),
@@ -40,14 +46,16 @@ impl __sdk::__query_builder::HasCols for MatchFault {
 ///
 /// Provides typed access to indexed columns for query building.
 pub struct MatchFaultIxCols {
-    pub player_id: __sdk::__query_builder::IxCol<MatchFault, u32>,
+    pub id: __sdk::__query_builder::IxCol<MatchFault, u64>,
+    pub room_id: __sdk::__query_builder::IxCol<MatchFault, u32>,
 }
 
 impl __sdk::__query_builder::HasIxCols for MatchFault {
     type IxCols = MatchFaultIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         MatchFaultIxCols {
-            player_id: __sdk::__query_builder::IxCol::new(table_name, "player_id"),
+            id: __sdk::__query_builder::IxCol::new(table_name, "id"),
+            room_id: __sdk::__query_builder::IxCol::new(table_name, "room_id"),
         }
     }
 }

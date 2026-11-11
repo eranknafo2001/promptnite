@@ -119,8 +119,9 @@ fn separate(bots: &mut [Bot], limit: f32) {
     }
 }
 
-/// Simulate a full match. Deterministic for a given `(specs, seed)`.
-pub fn run_match(specs: &[BotSpec], seed: u64) -> MatchOutcome {
+/// Simulate a full match of at most `max_ticks` ticks. Deterministic for a
+/// given `(specs, seed, max_ticks)`.
+pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
     let mut faults = Vec::new();
     let count = specs.len().max(1) as f32;
 
@@ -152,17 +153,17 @@ pub fn run_match(specs: &[BotSpec], seed: u64) -> MatchOutcome {
         })
         .collect();
 
-    let mut frames = Vec::with_capacity(rules::MAX_TICKS as usize + 1);
+    let mut frames = Vec::with_capacity(max_ticks as usize + 1);
     frames.push(snapshot(0, &bots, &vec![ActionKind::Idle; bots.len()]));
 
-    for tick in 1..=rules::MAX_TICKS {
+    for tick in 1..=max_ticks {
         if bots.iter().filter(|b| b.alive()).count() <= 1 {
             break;
         }
 
         // 1. Every bot decides from the same snapshot, so order doesn't matter.
         let actions: Vec<Action> = (0..bots.len())
-            .map(|i| decide(&mut bots, i, tick, &mut faults))
+            .map(|i| decide(&mut bots, i, tick, max_ticks, &mut faults))
             .collect();
 
         let mut did: Vec<ActionKind> = bots
@@ -232,7 +233,13 @@ pub fn run_match(specs: &[BotSpec], seed: u64) -> MatchOutcome {
     }
 }
 
-fn decide(bots: &mut [Bot], i: usize, tick: u32, faults: &mut Vec<Fault>) -> Action {
+fn decide(
+    bots: &mut [Bot],
+    i: usize,
+    tick: u32,
+    max_ticks: u32,
+    faults: &mut Vec<Fault>,
+) -> Action {
     if !bots[i].alive() || bots[i].lua.is_none() {
         return Action::Idle;
     }
@@ -252,6 +259,7 @@ fn decide(bots: &mut [Bot], i: usize, tick: u32, faults: &mut Vec<Fault>) -> Act
         .collect();
     let view = BotView {
         tick,
+        max_ticks,
         me: Seen {
             id: me.id,
             x: me.x,
@@ -341,6 +349,12 @@ mod tests {
         }
     }
 
+    const MAX_TICKS: u32 = rules::DEFAULT_MATCH_SECS * rules::TICKS_PER_SEC;
+
+    fn run_match(specs: &[BotSpec], seed: u64) -> MatchOutcome {
+        super::run_match(specs, seed, MAX_TICKS)
+    }
+
     const IDLE: &str = "function tick(state) return nil end";
 
     #[test]
@@ -378,14 +392,22 @@ mod tests {
         let last = outcome.frames.last().unwrap();
         assert_eq!(last.bots[1].hp, 0);
         assert_eq!(last.bots[1].action, ActionKind::Dead);
-        assert!((last.tick as usize) < rules::MAX_TICKS as usize);
+        assert!((last.tick as usize) < MAX_TICKS as usize);
     }
 
     #[test]
     fn idle_bots_draw_at_the_time_limit() {
         let outcome = run_match(&[spec(1, IDLE), spec(2, IDLE)], 1);
         assert_eq!(outcome.winner, None);
-        assert_eq!(outcome.frames.len(), rules::MAX_TICKS as usize + 1);
+        assert_eq!(outcome.frames.len(), MAX_TICKS as usize + 1);
+    }
+
+    #[test]
+    fn match_length_is_configurable() {
+        let script = "function tick(state) assert(state.rules.max_ticks == 150) end";
+        let outcome = super::run_match(&[spec(1, script), spec(2, IDLE)], 1, 150);
+        assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
+        assert_eq!(outcome.frames.len(), 151);
     }
 
     #[test]

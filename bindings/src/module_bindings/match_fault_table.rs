@@ -164,32 +164,32 @@ impl<'ctx> __sdk::WithUpdate for MatchFaultTableHandle<'ctx> {
     }
 }
 
-/// Access to the `player_id` unique index on the table `match_fault`,
+/// Access to the `id` unique index on the table `match_fault`,
 /// which allows point queries on the field of the same name
-/// via the [`MatchFaultPlayerIdUnique::find`] method.
+/// via the [`MatchFaultIdUnique::find`] method.
 ///
 /// Users are encouraged not to explicitly reference this type,
 /// but to directly chain method calls,
-/// like `ctx.db.match_fault().player_id().find(...)`.
-pub struct MatchFaultPlayerIdUnique<'ctx> {
-    imp: __sdk::UniqueConstraintHandle<MatchFault, u32>,
+/// like `ctx.db.match_fault().id().find(...)`.
+pub struct MatchFaultIdUnique<'ctx> {
+    imp: __sdk::UniqueConstraintHandle<MatchFault, u64>,
     phantom: std::marker::PhantomData<&'ctx super::RemoteTables>,
 }
 
 impl<'ctx> MatchFaultTableHandle<'ctx> {
-    /// Get a handle on the `player_id` unique index on the table `match_fault`.
-    pub fn player_id(&self) -> MatchFaultPlayerIdUnique<'ctx> {
-        MatchFaultPlayerIdUnique {
-            imp: self.imp.get_unique_constraint::<u32>("player_id"),
+    /// Get a handle on the `id` unique index on the table `match_fault`.
+    pub fn id(&self) -> MatchFaultIdUnique<'ctx> {
+        MatchFaultIdUnique {
+            imp: self.imp.get_unique_constraint::<u64>("id"),
             phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<'ctx> MatchFaultPlayerIdUnique<'ctx> {
-    /// Find the subscribed row whose `player_id` column value is equal to `col_val`,
+impl<'ctx> MatchFaultIdUnique<'ctx> {
+    /// Find the subscribed row whose `id` column value is equal to `col_val`,
     /// if such a row is present in the client cache.
-    pub fn find(&self, col_val: &u32) -> Option<MatchFault> {
+    pub fn find(&self, col_val: &u64) -> Option<MatchFault> {
         self.imp.find(col_val)
     }
 }
@@ -197,7 +197,7 @@ impl<'ctx> MatchFaultPlayerIdUnique<'ctx> {
 #[doc(hidden)]
 pub(super) fn register_table(client_cache: &mut __sdk::ClientCache<super::RemoteModule>) {
     let _table = client_cache.get_or_make_table::<MatchFault>("match_fault");
-    _table.add_unique_constraint::<u32>("player_id", |row| &row.player_id);
+    _table.add_unique_constraint::<u64>("id", |row| &row.id);
 }
 
 #[doc(hidden)]

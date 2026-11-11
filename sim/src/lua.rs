@@ -16,6 +16,8 @@ use crate::{rules, sim::Action};
 /// What a bot can see when it decides its action.
 pub struct BotView<'a> {
     pub tick: u32,
+    /// The match's time limit, in ticks.
+    pub max_ticks: u32,
     pub me: Seen,
     pub cooldown: u32,
     /// Living enemies only.
@@ -178,7 +180,7 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
 
     let r = Table::new(&ctx);
     set(ctx, r, "ticks_per_sec", rules::TICKS_PER_SEC as i64);
-    set(ctx, r, "max_ticks", rules::MAX_TICKS as i64);
+    set(ctx, r, "max_ticks", view.max_ticks as i64);
     set(ctx, r, "walk_speed", rules::WALK_SPEED as f64);
     set(ctx, r, "attack_range", rules::ATTACK_RANGE as f64);
     set(ctx, r, "attack_damage", rules::ATTACK_DAMAGE as i64);

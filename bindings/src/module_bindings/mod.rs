@@ -15,8 +15,6 @@ pub mod deliver_script_reducer;
 pub mod fail_job_reducer;
 pub mod frame_table;
 pub mod frame_type;
-pub mod game_table;
-pub mod game_type;
 pub mod job_timeout_type;
 pub mod join_reducer;
 pub mod match_fault_table;
@@ -26,6 +24,9 @@ pub mod phase_timer_type;
 pub mod phase_type;
 pub mod player_table;
 pub mod player_type;
+pub mod room_table;
+pub mod room_type;
+pub mod set_room_settings_reducer;
 pub mod submission_status_type;
 pub mod submission_table;
 pub mod submission_type;
@@ -41,8 +42,6 @@ pub use deliver_script_reducer::deliver_script;
 pub use fail_job_reducer::fail_job;
 pub use frame_table::*;
 pub use frame_type::Frame;
-pub use game_table::*;
-pub use game_type::Game;
 pub use job_timeout_type::JobTimeout;
 pub use join_reducer::join;
 pub use match_fault_table::*;
@@ -52,6 +51,9 @@ pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
 pub use player_table::*;
 pub use player_type::Player;
+pub use room_table::*;
+pub use room_type::Room;
+pub use set_room_settings_reducer::set_room_settings;
 pub use submission_status_type::SubmissionStatus;
 pub use submission_table::*;
 pub use submission_type::Submission;
@@ -78,6 +80,11 @@ pub enum Reducer {
     },
     Join {
         name: String,
+        room: String,
+    },
+    SetRoomSettings {
+        match_secs: u32,
+        house_bot: bool,
     },
     SubmitPrompt {
         prompt: String,
@@ -97,6 +104,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::DeliverScript { .. } => "deliver_script",
             Reducer::FailJob { .. } => "fail_job",
             Reducer::Join { .. } => "join",
+            Reducer::SetRoomSettings { .. } => "set_room_settings",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
             Reducer::SubmitScript { .. } => "submit_script",
             _ => unreachable!(),
@@ -123,9 +131,17 @@ impl __sdk::Reducer for Reducer {
                 job_id: job_id.clone(),
                 error: error.clone(),
             }),
-            Reducer::Join { name } => {
-                __sats::bsatn::to_vec(&join_reducer::JoinArgs { name: name.clone() })
-            }
+            Reducer::Join { name, room } => __sats::bsatn::to_vec(&join_reducer::JoinArgs {
+                name: name.clone(),
+                room: room.clone(),
+            }),
+            Reducer::SetRoomSettings {
+                match_secs,
+                house_bot,
+            } => __sats::bsatn::to_vec(&set_room_settings_reducer::SetRoomSettingsArgs {
+                match_secs: match_secs.clone(),
+                house_bot: house_bot.clone(),
+            }),
             Reducer::SubmitPrompt { prompt } => {
                 __sats::bsatn::to_vec(&submit_prompt_reducer::SubmitPromptArgs {
                     prompt: prompt.clone(),
@@ -146,10 +162,10 @@ impl __sdk::Reducer for Reducer {
 #[doc(hidden)]
 pub struct DbUpdate {
     frame: __sdk::TableUpdate<Frame>,
-    game: __sdk::TableUpdate<Game>,
     match_fault: __sdk::TableUpdate<MatchFault>,
     my_script: __sdk::TableUpdate<BotScript>,
     player: __sdk::TableUpdate<Player>,
+    room: __sdk::TableUpdate<Room>,
     submission: __sdk::TableUpdate<Submission>,
 }
 
@@ -162,9 +178,6 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "frame" => db_update
                     .frame
                     .append(frame_table::parse_table_update(table_update)?),
-                "game" => db_update
-                    .game
-                    .append(game_table::parse_table_update(table_update)?),
                 "match_fault" => db_update
                     .match_fault
                     .append(match_fault_table::parse_table_update(table_update)?),
@@ -174,6 +187,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "player" => db_update
                     .player
                     .append(player_table::parse_table_update(table_update)?),
+                "room" => db_update
+                    .room
+                    .append(room_table::parse_table_update(table_update)?),
                 "submission" => db_update
                     .submission
                     .append(submission_table::parse_table_update(table_update)?),
@@ -205,16 +221,16 @@ impl __sdk::DbUpdate for DbUpdate {
 
         diff.frame = cache
             .apply_diff_to_table::<Frame>("frame", &self.frame)
-            .with_updates_by_pk(|row| &row.tick);
-        diff.game = cache
-            .apply_diff_to_table::<Game>("game", &self.game)
-            .with_updates_by_pk(|row| &row.id);
+            .with_updates_by_pk(|row| &row.key);
         diff.match_fault = cache
             .apply_diff_to_table::<MatchFault>("match_fault", &self.match_fault)
-            .with_updates_by_pk(|row| &row.player_id);
+            .with_updates_by_pk(|row| &row.id);
         diff.player = cache
             .apply_diff_to_table::<Player>("player", &self.player)
             .with_updates_by_pk(|row| &row.identity);
+        diff.room = cache
+            .apply_diff_to_table::<Room>("room", &self.room)
+            .with_updates_by_pk(|row| &row.id);
         diff.submission = cache
             .apply_diff_to_table::<Submission>("submission", &self.submission)
             .with_updates_by_pk(|row| &row.player_id);
@@ -229,9 +245,6 @@ impl __sdk::DbUpdate for DbUpdate {
                 "frame" => db_update
                     .frame
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "game" => db_update
-                    .game
-                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "match_fault" => db_update
                     .match_fault
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -240,6 +253,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "player" => db_update
                     .player
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "room" => db_update
+                    .room
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "submission" => db_update
                     .submission
@@ -260,9 +276,6 @@ impl __sdk::DbUpdate for DbUpdate {
                 "frame" => db_update
                     .frame
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "game" => db_update
-                    .game
-                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "match_fault" => db_update
                     .match_fault
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -271,6 +284,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "player" => db_update
                     .player
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "room" => db_update
+                    .room
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "submission" => db_update
                     .submission
@@ -291,10 +307,10 @@ impl __sdk::DbUpdate for DbUpdate {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
     frame: __sdk::TableAppliedDiff<'r, Frame>,
-    game: __sdk::TableAppliedDiff<'r, Game>,
     match_fault: __sdk::TableAppliedDiff<'r, MatchFault>,
     my_script: __sdk::TableAppliedDiff<'r, BotScript>,
     player: __sdk::TableAppliedDiff<'r, Player>,
+    room: __sdk::TableAppliedDiff<'r, Room>,
     submission: __sdk::TableAppliedDiff<'r, Submission>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
@@ -310,10 +326,10 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
         callbacks.invoke_table_row_callbacks::<Frame>("frame", &self.frame, event);
-        callbacks.invoke_table_row_callbacks::<Game>("game", &self.game, event);
         callbacks.invoke_table_row_callbacks::<MatchFault>("match_fault", &self.match_fault, event);
         callbacks.invoke_table_row_callbacks::<BotScript>("my_script", &self.my_script, event);
         callbacks.invoke_table_row_callbacks::<Player>("player", &self.player, event);
+        callbacks.invoke_table_row_callbacks::<Room>("room", &self.room, event);
         callbacks.invoke_table_row_callbacks::<Submission>("submission", &self.submission, event);
     }
 }
@@ -570,19 +586,19 @@ impl __sdk::SubscriptionHandle for SubscriptionHandle {
 /// either a [`DbConnection`] or an [`EventContext`] and operate on either.
 pub trait RemoteDbContext:
     __sdk::DbContext<
-        DbView = RemoteTables,
-        Reducers = RemoteReducers,
-        SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
-    >
+    DbView = RemoteTables,
+    Reducers = RemoteReducers,
+    SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
+>
 {
 }
 impl<
-    Ctx: __sdk::DbContext<
+        Ctx: __sdk::DbContext<
             DbView = RemoteTables,
             Reducers = RemoteReducers,
             SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
         >,
-> RemoteDbContext for Ctx
+    > RemoteDbContext for Ctx
 {
 }
 
@@ -976,18 +992,18 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         frame_table::register_table(client_cache);
-        game_table::register_table(client_cache);
         match_fault_table::register_table(client_cache);
         my_script_table::register_table(client_cache);
         player_table::register_table(client_cache);
+        room_table::register_table(client_cache);
         submission_table::register_table(client_cache);
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "frame",
-        "game",
         "match_fault",
         "my_script",
         "player",
+        "room",
         "submission",
     ];
 }

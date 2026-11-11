@@ -9,6 +9,8 @@ use super::bot_frame_type::BotFrame;
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub struct Frame {
+    pub key: u64,
+    pub room_id: u32,
     pub tick: u32,
     pub bots: Vec<BotFrame>,
 }
@@ -21,6 +23,8 @@ impl __sdk::InModule for Frame {
 ///
 /// Provides typed access to columns for query building.
 pub struct FrameCols {
+    pub key: __sdk::__query_builder::Col<Frame, u64>,
+    pub room_id: __sdk::__query_builder::Col<Frame, u32>,
     pub tick: __sdk::__query_builder::Col<Frame, u32>,
     pub bots: __sdk::__query_builder::Col<Frame, Vec<BotFrame>>,
 }
@@ -29,6 +33,8 @@ impl __sdk::__query_builder::HasCols for Frame {
     type Cols = FrameCols;
     fn cols(table_name: &'static str) -> Self::Cols {
         FrameCols {
+            key: __sdk::__query_builder::Col::new(table_name, "key"),
+            room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             tick: __sdk::__query_builder::Col::new(table_name, "tick"),
             bots: __sdk::__query_builder::Col::new(table_name, "bots"),
         }
@@ -39,14 +45,16 @@ impl __sdk::__query_builder::HasCols for Frame {
 ///
 /// Provides typed access to indexed columns for query building.
 pub struct FrameIxCols {
-    pub tick: __sdk::__query_builder::IxCol<Frame, u32>,
+    pub key: __sdk::__query_builder::IxCol<Frame, u64>,
+    pub room_id: __sdk::__query_builder::IxCol<Frame, u32>,
 }
 
 impl __sdk::__query_builder::HasIxCols for Frame {
     type IxCols = FrameIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         FrameIxCols {
-            tick: __sdk::__query_builder::IxCol::new(table_name, "tick"),
+            key: __sdk::__query_builder::IxCol::new(table_name, "key"),
+            room_id: __sdk::__query_builder::IxCol::new(table_name, "room_id"),
         }
     }
 }
