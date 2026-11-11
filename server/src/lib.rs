@@ -397,6 +397,8 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         // The room they left may have been waiting only for them.
         try_start_match(ctx, left);
     }
+    // Coming back online with a ready script may complete this room.
+    try_start_match(ctx, room.id);
     Ok(())
 }
 
