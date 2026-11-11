@@ -80,14 +80,14 @@ the module build (and that `bindings/` matches it), the browser build, and the
 worker's typecheck.
 
 Every push to `main` runs the same checks and then
-[deploys](.github/workflows/deploy.yml): the agent to Cloudflare Workers and
-the module to SpacetimeDB. A module change that would lose data is not
-published; do that one by hand.
+[deploys](.github/workflows/deploy.yml): the agent to Cloudflare Workers, the
+module to SpacetimeDB, and the browser client to [itch.io](https://itch.io),
+built with the hosted database as its default. A module change that would lose
+data is not published; do that one by hand.
 
-The browser client is not deployed. Each run on `main` builds it with the
-hosted database as its default and keeps it as the `web-dist` artifact; that
-zip has `index.html` at its top level, which is what itch.io wants for an
-HTML5 game.
+The itch.io game page has to exist before the first deploy. After that first
+upload, edit the page once: set the kind of project to HTML and tick "This
+file will be played in the browser" on the uploaded file.
 
 Repository secrets (Settings → Secrets and variables → Actions):
 
@@ -98,11 +98,14 @@ Repository secrets (Settings → Secrets and variables → Actions):
 | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account to deploy to |
 | `AGENT_SECRET` | Any password you make up; given to both the module and the worker |
 | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | The model that writes the bots |
+| `BUTLER_API_KEY` | An itch.io API key, from itch.io → Settings → API keys |
 
-Optional repository variables, with their defaults:
+Repository variables. Only `ITCH_TARGET` is required; the rest show their defaults:
 
 | Variable | |
 | --- | --- |
+| `ITCH_TARGET` | The itch.io game to upload to, as `user/game` |
+| `ITCH_CHANNEL` | `html5`, the itch.io channel the build is pushed to |
 | `SPACETIMEDB_URI` | `https://maincloud.spacetimedb.com` |
 | `SPACETIMEDB_DB` | `promptnite`. Database names are shared by everyone on the host, so pick another if it is taken |
 | `AGENT_URL` | The worker's `workers.dev` address. Set it if the worker has a custom domain |
