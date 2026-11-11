@@ -16,8 +16,16 @@ pub type Conn = StdbConnection<DbConnection>;
 type Subs = StdbSubscriptions<SubKey, RemoteModule>;
 type Cmds<'w, 's> = StdbCommands<'w, 's, DbConnection, RemoteModule>;
 
-const DEFAULT_URI: &str = "http://127.0.0.1:3210";
-const DEFAULT_DATABASE: &str = "promptnite";
+// Where to connect when nothing is given at launch: local development, unless
+// the build baked in its own (the deploy workflow does, for the hosted client).
+const DEFAULT_URI: &str = match option_env!("PROMPTNITE_DEFAULT_URI") {
+    Some(uri) => uri,
+    None => "http://127.0.0.1:3210",
+};
+const DEFAULT_DATABASE: &str = match option_env!("PROMPTNITE_DEFAULT_DB") {
+    Some(database) => database,
+    None => "promptnite",
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SubKey {

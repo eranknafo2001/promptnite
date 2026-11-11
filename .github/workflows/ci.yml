@@ -1,0 +1,132 @@
+name: CI
+
+# Runs on every pull request. Pushes to main run it through deploy.yml, which
+# calls this workflow and deploys only if it passes.
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      web-default-uri:
+        description: SpacetimeDB host baked into the browser client as its default.
+        type: string
+        default: ""
+      web-default-db:
+        description: Database name baked into the browser client as its default.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Install Bevy's Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native
+      # bindings/ is generated code and is not formatted; the module job checks
+      # it is up to date instead.
+      - name: Format
+        run: cargo fmt --check -p promptnite-sim -p promptnite-server -p promptnite
+      - name: Clippy
+        run: cargo clippy --workspace --exclude promptnite-server --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+
+  module:
+    name: SpacetimeDB module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup default stable
+      - uses: ./.github/actions/setup-spacetime
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: module
+      # Run from server/ so its .cargo/config.toml applies.
+      - name: Clippy
+        working-directory: server
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+      - name: Build module
+        run: spacetime build --module-path server
+      - name: Bindings are up to date
+        run: |
+          make bindings
+          if ! git diff --exit-code -- bindings; then
+            echo "::error::bindings/ is out of date. Run 'make bindings' and commit the result."
+            exit 1
+          fi
+
+  web:
+    name: Browser client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.22.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web
+      - name: Build
+        working-directory: client
+        env:
+          DEFAULT_URI: ${{ inputs.web-default-uri }}
+          DEFAULT_DB: ${{ inputs.web-default-db }}
+        run: |
+          # Unset (pull requests) keeps the local-development defaults.
+          if [ -n "$DEFAULT_URI" ]; then export PROMPTNITE_DEFAULT_URI="$DEFAULT_URI"; fi
+          if [ -n "$DEFAULT_DB" ]; then export PROMPTNITE_DEFAULT_DB="$DEFAULT_DB"; fi
+          trunk build --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: client/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  worker:
+    name: Agent worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run check
+      - name: Bundle
+        run: npx wrangler deploy --dry-run
