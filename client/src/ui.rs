@@ -35,6 +35,9 @@ use crate::{
 const COUNTDOWN_SECS: f32 = 3.0;
 /// The house bot fights in rooms that have it switched on.
 const HOUSE_BOT_ID: u32 = 0;
+/// Players a room holds, one per edge. Must match `MAX_BOTS` in
+/// `sim/src/rules.rs`.
+const MAX_PLAYERS: usize = 4;
 /// Same limits as the server module, so the boxes simply stop taking input
 /// instead of the reducer rejecting it.
 const MAX_NAME_CHARS: usize = 24;
@@ -617,9 +620,13 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         ));
     }
     // The house bot is listed while it is part of the game: switched on for
-    // the match being prepared, or fighting in the one on screen.
+    // the match being prepared and with an edge left for it, or fighting in
+    // the one on screen.
     let house_bot = match game.phase {
-        Phase::Prompting => game.house_bot,
+        Phase::Prompting => {
+            let players = snapshot.players.iter().filter(|p| p.online).count();
+            game.house_bot && players < MAX_PLAYERS
+        }
         _ => replay.bots.iter().any(|bot| bot.id == HOUSE_BOT_ID),
     };
     if house_bot {
