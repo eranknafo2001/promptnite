@@ -9,6 +9,9 @@
 //!   +---------------------------+         |
 //!   | prompt bar                |         |
 //!   +---------------------------+---------+
+//!
+//! Until the player has picked a room, the prompt bar is the "name + room"
+//! form and the rest is empty.
 
 use bevy::{
     camera::{CameraOutputMode, ClearColorConfig, Viewport, visibility::RenderLayers},
@@ -23,20 +26,29 @@ use promptnite_bindings::{sdk::Table, *};
 
 use crate::{
     arena::{ArenaCamera, Replay, bot_color},
-    net::{Conn, Server},
+    net::{self, Conn, Server, Session},
 };
 
 /// Must match `COUNTDOWN` in the server module. Only used for the big
 /// 3-2-1 on screen; the server decides when the fight really starts.
 const COUNTDOWN_SECS: f32 = 3.0;
 const SIDE_PANEL_WIDTH: f32 = 300.0;
-/// The house bot fills the arena when a player is alone.
+/// The house bot fights in rooms that have it switched on.
 const HOUSE_BOT_ID: u32 = 0;
+/// Must match `MAX_NAME_CHARS` / `MAX_ROOM_CHARS` in the server module.
+const MAX_NAME_CHARS: usize = 24;
+const MAX_ROOM_CHARS: usize = 24;
+/// Match lengths the owner can pick from, in seconds. The server accepts
+/// anything within its own limits (`sim/src/rules.rs`).
+const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
 
 #[derive(Resource, Default)]
 struct Form {
     name: String,
+    room: String,
     prompt: String,
+    /// Whether `name` was already filled in from an earlier visit.
+    prefilled: bool,
 }
 
 pub fn plugin(app: &mut App) {
@@ -67,36 +79,48 @@ fn setup(mut commands: Commands, mut settings: ResMut<EguiGlobalSettings>) {
 }
 
 /// Everything the panels need, read from the SDK cache once per frame.
+/// `None` until the player is in a room.
 struct Snapshot {
-    game: Game,
+    game: Room,
+    /// Everyone in the room, online or not.
     players: Vec<Player>,
     submissions: Vec<Submission>,
     faults: Vec<MatchFault>,
-    me: Option<Player>,
+    me: Player,
     my_script: Option<BotScript>,
 }
 
 impl Snapshot {
     fn read(conn: &Conn) -> Option<Self> {
         let db = conn.db();
-        let game = db.game().id().find(&0)?;
-        let mut players: Vec<Player> = db.player().iter().collect();
+        let (me, game) = net::my_room(conn)?;
+        // The cache can briefly hold rows of a room we just left.
+        let mut players: Vec<Player> = db
+            .player()
+            .iter()
+            .filter(|player| player.room_id == game.id)
+            .collect();
         players.sort_by_key(|player| player.id);
-        let me = conn
-            .try_identity()
-            .and_then(|identity| players.iter().find(|p| p.identity == identity).cloned());
         Some(Self {
             submissions: db
                 .submission()
                 .iter()
-                .filter(|s| s.round == game.round)
+                .filter(|s| s.room_id == game.id && s.round == game.round)
                 .collect(),
-            faults: db.match_fault().iter().collect(),
+            faults: db
+                .match_fault()
+                .iter()
+                .filter(|fault| fault.room_id == game.id)
+                .collect(),
             my_script: db.my_script().iter().find(|s| s.round == game.round),
             game,
             players,
             me,
         })
+    }
+
+    fn i_own_the_room(&self) -> bool {
+        self.game.owner == self.me.id
     }
 
     fn name_of(&self, id: u32) -> String {
@@ -117,6 +141,7 @@ impl Snapshot {
 fn draw(
     mut contexts: EguiContexts,
     mut form: ResMut<Form>,
+    mut session: ResMut<Session>,
     conn: Option<Res<Conn>>,
     server: Res<Server>,
     replay: Res<Replay>,
@@ -138,7 +163,9 @@ fn draw(
     let side_width = egui::Panel::right("side")
         .exact_size(SIDE_PANEL_WIDTH)
         .resizable(false)
-        .show(&mut root, |ui| side_panel(ui, snapshot.as_ref(), &server))
+        .show(&mut root, |ui| {
+            side_panel(ui, conn, snapshot.as_ref(), &server)
+        })
         .response
         .rect
         .width();
@@ -147,7 +174,14 @@ fn draw(
         .resizable(false)
         .show(&mut root, |ui| {
             ui.add_space(6.0);
-            prompt_bar(ui, conn, snapshot.as_ref(), &mut form, &server);
+            prompt_bar(
+                ui,
+                conn,
+                snapshot.as_ref(),
+                &mut form,
+                &mut session,
+                &server,
+            );
             ui.add_space(6.0);
         })
         .response
@@ -189,16 +223,27 @@ fn draw(
     Ok(())
 }
 
-fn side_panel(ui: &mut egui::Ui, snapshot: Option<&Snapshot>, server: &Server) {
+fn side_panel(
+    ui: &mut egui::Ui,
+    conn: Option<&Conn>,
+    snapshot: Option<&Snapshot>,
+    server: &Server,
+) {
     ui.add_space(8.0);
     ui.heading("promptnite");
-    let Some(snapshot) = snapshot else {
-        ui.label(format!("Connecting to {} …", server.uri));
+    let (Some(conn), Some(snapshot)) = (conn, snapshot) else {
+        if conn.is_some() {
+            ui.label("Pick a room to play in.");
+            ui.weak("Everyone who enters the same room id plays together.");
+        } else {
+            ui.label(format!("Connecting to {} …", server.uri));
+        }
         return;
     };
     let game = &snapshot.game;
     ui.label(format!(
-        "Round {}  ·  {}",
+        "Room {}  ·  round {}  ·  {}",
+        game.code,
         game.round,
         match game.phase {
             Phase::Prompting => "writing prompts",
@@ -209,17 +254,22 @@ fn side_panel(ui: &mut egui::Ui, snapshot: Option<&Snapshot>, server: &Server) {
     ));
 
     ui.separator();
+    room_settings(ui, conn, snapshot);
+
+    ui.separator();
     ui.strong("Players");
     for player in snapshot.players.iter().filter(|player| player.online) {
         ui.horizontal(|ui| {
             let [r, g, b] = bot_color(player.id);
             ui.colored_label(egui::Color32::from_rgb(r, g, b), "⏺");
-            let you = snapshot.me.as_ref().is_some_and(|me| me.id == player.id);
-            ui.label(if you {
-                format!("{} (you)", player.name)
-            } else {
-                player.name.clone()
-            });
+            let mut name = player.name.clone();
+            if player.id == snapshot.me.id {
+                name += " (you)";
+            }
+            if player.id == game.owner {
+                name += " · owner";
+            }
+            ui.label(name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 match snapshot.submission_of(player.id).map(|s| s.status) {
                     None => ui.weak("thinking of a prompt"),
@@ -231,6 +281,17 @@ fn side_panel(ui: &mut egui::Ui, snapshot: Option<&Snapshot>, server: &Server) {
                         ui.colored_label(egui::Color32::LIGHT_RED, "failed")
                     }
                 };
+            });
+        });
+    }
+
+    if game.house_bot {
+        ui.horizontal(|ui| {
+            let [r, g, b] = bot_color(HOUSE_BOT_ID);
+            ui.colored_label(egui::Color32::from_rgb(r, g, b), "⏺");
+            ui.label(snapshot.name_of(HOUSE_BOT_ID));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "ready")
             });
         });
     }
@@ -273,36 +334,106 @@ fn side_panel(ui: &mut egui::Ui, snapshot: Option<&Snapshot>, server: &Server) {
     }
 }
 
+/// The room's settings: controls for the owner, plain text for everyone else.
+fn room_settings(ui: &mut egui::Ui, conn: &Conn, snapshot: &Snapshot) {
+    let game = &snapshot.game;
+    ui.strong("Room settings");
+    if !snapshot.i_own_the_room() {
+        ui.label(format!(
+            "{} s matches, {} the house bot",
+            game.match_secs,
+            if game.house_bot { "with" } else { "without" }
+        ));
+        ui.weak(format!("Chosen by {}", snapshot.name_of(game.owner)));
+        return;
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Match length");
+        for secs in MATCH_LENGTHS {
+            let chosen = game.match_secs == secs;
+            if ui.selectable_label(chosen, format!("{secs} s")).clicked() && !chosen {
+                report(conn.reducers().set_room_settings(secs, game.house_bot));
+            }
+        }
+    });
+    let mut house_bot = game.house_bot;
+    if ui
+        .checkbox(&mut house_bot, "House bot joins the fight")
+        .changed()
+    {
+        report(
+            conn.reducers()
+                .set_room_settings(game.match_secs, house_bot),
+        );
+    }
+    ui.weak("Applies from the next match.");
+}
+
+/// Name and room id. Shown on every launch.
+fn join_form(ui: &mut egui::Ui, conn: &Conn, form: &mut Form, session: &mut Session) {
+    // Returning players get their old name suggested.
+    if !form.prefilled
+        && let Some(me) = net::me(conn)
+    {
+        form.prefilled = true;
+        if form.name.is_empty() {
+            form.name = me.name;
+        }
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Your name:");
+        let name_field = ui.add(
+            egui::TextEdit::singleline(&mut form.name)
+                .char_limit(MAX_NAME_CHARS)
+                .desired_width(180.0),
+        );
+        ui.label("Room id:");
+        let room_field = ui.add(
+            egui::TextEdit::singleline(&mut form.room)
+                .char_limit(MAX_ROOM_CHARS)
+                .hint_text("same id = same room")
+                .desired_width(180.0),
+        );
+        let (name, room) = (form.name.trim(), form.room.trim());
+        let filled = !name.is_empty() && !room.is_empty();
+        let clicked = ui.add_enabled(filled, egui::Button::new("Join")).clicked();
+        let entered = pressed_enter(ui, &name_field) || pressed_enter(ui, &room_field);
+        if (clicked || entered) && filled {
+            session.join(name.to_string(), room.to_string());
+        }
+    });
+}
+
 fn prompt_bar(
     ui: &mut egui::Ui,
     conn: Option<&Conn>,
     snapshot: Option<&Snapshot>,
     form: &mut Form,
+    session: &mut Session,
     server: &Server,
 ) {
-    let (Some(conn), Some(snapshot)) = (conn, snapshot) else {
+    let Some(conn) = conn else {
         ui.label(format!(
             "Connecting to database \"{}\" at {} …",
             server.database, server.uri
         ));
         return;
     };
-
-    let Some(me) = snapshot.me.as_ref().filter(|me| !me.name.is_empty()) else {
-        ui.horizontal(|ui| {
-            ui.label("Your name:");
-            let field = ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(220.0));
-            let name = form.name.trim();
-            let clicked = ui
-                .add_enabled(!name.is_empty(), egui::Button::new("Join"))
-                .clicked();
-            if (clicked || pressed_enter(ui, &field)) && !name.is_empty() {
-                report(conn.reducers().join(name.to_string()));
-            }
-        });
+    let Some(snapshot) = snapshot else {
+        if session.has_joined() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Entering the room…");
+            });
+        } else {
+            join_form(ui, conn, form, session);
+        }
         return;
     };
 
+    let me = &snapshot.me;
     let submission = snapshot.submission_of(me.id);
     match (snapshot.game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
@@ -332,7 +463,12 @@ fn prompt_bar(
             });
         }
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => {
-            ui.label("Your bot is ready. Waiting for the other players…");
+            let alone = snapshot.players.iter().filter(|p| p.online).count() < 2;
+            ui.label(if alone && !snapshot.game.house_bot {
+                "Your bot is ready. Waiting for somebody else to join the room…"
+            } else {
+                "Your bot is ready. Waiting for the other players…"
+            });
         }
         (Phase::Countdown, _) => {
             ui.label("All bots are ready. The fight is about to start.");

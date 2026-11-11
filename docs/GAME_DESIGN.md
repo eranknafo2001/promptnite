@@ -7,13 +7,31 @@ bot directly: their **agent** does. The player's only input is a prompt.
 
 ![Client screenshot](screenshot.png)
 
+## Rooms
+
+Every time a player opens the app they enter a name and a **room id**.
+Everyone who enters the same id is in the same room, and each room runs its
+own round loop. Ids are not case sensitive.
+
+The first player in creates the room and is its **owner**. The owner sets:
+
+- **Match length**: the time limit of a fight, 60 seconds unless changed
+  (the server accepts 15 to 120).
+- **House bot**: whether the built-in reference bot fights in every match.
+  On by default, so a room can be played alone.
+
+Changes apply from the next match. The owner stays the owner while anybody is
+in the room, even while they are away themselves. A room everybody has left
+goes to the next player who enters it, with the settings back to default.
+
 ## Round loop
 
 1. **Prompting** — every player types a prompt for their agent
    ("circle the enemy and only punch when its cooldown is running").
 2. Each player's agent turns the prompt into a **Lua script**. That script is
    the bot's whole brain for the round.
-3. When every online player's script is ready, a **countdown** starts.
+3. When every player in the room has a script ready, and there are at least
+   two bots counting the house bot, a **countdown** starts.
 4. **Fight** — all bots run their scripts at the same time. Nobody can
    intervene.
 5. **Results** — the winner is shown, then the next round starts at step 1.
@@ -54,7 +72,7 @@ Globals persist between ticks, so a script can remember things.
 
 - Square arena, 20 × 20 units. Bots are spheres of radius 0.5, spawn on a
   circle, are solid (cannot overlap) and cannot leave the arena.
-- 10 ticks per second, 60 seconds maximum.
+- 10 ticks per second. The time limit is the room's match length.
 - 100 hp, a punch does 10 damage within 1.5 units, then a 5 tick cooldown.
 - Walking speed 3 units per second.
 - Attacks in the same tick land simultaneously, so a double knockout is
@@ -70,9 +88,10 @@ From the original sketch: the arena seen from a tilted camera with a sphere per
 bot, a panel on the right, and a long prompt bar along the bottom.
 
 - **Arena**: bots with name and health bar, big countdown / result text.
-- **Right panel**: round and phase, players and whether their agent is done,
-  the Lua your own agent wrote, script errors.
-- **Bottom bar**: name entry, then the prompt box.
+- **Right panel**: room, round and phase, the room's settings (controls for
+  the owner), players and whether their agent is done, the Lua your own agent
+  wrote, script errors.
+- **Bottom bar**: name and room id entry, then the prompt box.
 
 ## Architecture
 
@@ -120,8 +139,11 @@ Decisions worth knowing about:
   script is a small task and everyone is waiting on the slowest agent.
 - **Private by default.** Prompts and scripts are in private tables; a player
   sees only their own script through a view.
-- **A house bot** (the reference chaser) joins when a player is alone, so the
-  loop can be played solo.
+- **A house bot** (the reference chaser) fights in every match unless the
+  room's owner switches it off, so the loop can be played solo.
+- **Clients only subscribe to their own room.** Every room-scoped table has a
+  `room_id` column and the client filters its subscriptions on it, so one
+  room's match frames are never sent to another room's players.
 
 ## Open questions
 
@@ -132,7 +154,10 @@ Decisions worth knowing about:
 - **Peeking**: match frames are public the moment the match is simulated,
   i.e. during the countdown. A modified client could read the result early.
   Fine while it is friends playing; fix by revealing frames on a timer.
-- **Rooms**: there is a single global game. Lobbies and matchmaking come later.
+- **Rooms**: anybody who knows or guesses a room id can walk in. A list of
+  rooms, private rooms and matchmaking come later. Rooms are never deleted.
+- **Absent owner**: if the owner leaves while others stay, nobody can change
+  the settings until the owner is back or the room empties.
 - **Identity**: the browser keeps your player for the tab session; the desktop
   client is a new player on every launch.
 - **Agent time limit**: the Worker finishes in the background after answering

@@ -165,32 +165,32 @@ impl<'ctx> __sdk::WithUpdate for FrameTableHandle<'ctx> {
     }
 }
 
-/// Access to the `tick` unique index on the table `frame`,
+/// Access to the `key` unique index on the table `frame`,
 /// which allows point queries on the field of the same name
-/// via the [`FrameTickUnique::find`] method.
+/// via the [`FrameKeyUnique::find`] method.
 ///
 /// Users are encouraged not to explicitly reference this type,
 /// but to directly chain method calls,
-/// like `ctx.db.frame().tick().find(...)`.
-pub struct FrameTickUnique<'ctx> {
-    imp: __sdk::UniqueConstraintHandle<Frame, u32>,
+/// like `ctx.db.frame().key().find(...)`.
+pub struct FrameKeyUnique<'ctx> {
+    imp: __sdk::UniqueConstraintHandle<Frame, u64>,
     phantom: std::marker::PhantomData<&'ctx super::RemoteTables>,
 }
 
 impl<'ctx> FrameTableHandle<'ctx> {
-    /// Get a handle on the `tick` unique index on the table `frame`.
-    pub fn tick(&self) -> FrameTickUnique<'ctx> {
-        FrameTickUnique {
-            imp: self.imp.get_unique_constraint::<u32>("tick"),
+    /// Get a handle on the `key` unique index on the table `frame`.
+    pub fn key(&self) -> FrameKeyUnique<'ctx> {
+        FrameKeyUnique {
+            imp: self.imp.get_unique_constraint::<u64>("key"),
             phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<'ctx> FrameTickUnique<'ctx> {
-    /// Find the subscribed row whose `tick` column value is equal to `col_val`,
+impl<'ctx> FrameKeyUnique<'ctx> {
+    /// Find the subscribed row whose `key` column value is equal to `col_val`,
     /// if such a row is present in the client cache.
-    pub fn find(&self, col_val: &u32) -> Option<Frame> {
+    pub fn find(&self, col_val: &u64) -> Option<Frame> {
         self.imp.find(col_val)
     }
 }
@@ -198,7 +198,7 @@ impl<'ctx> FrameTickUnique<'ctx> {
 #[doc(hidden)]
 pub(super) fn register_table(client_cache: &mut __sdk::ClientCache<super::RemoteModule>) {
     let _table = client_cache.get_or_make_table::<Frame>("frame");
-    _table.add_unique_constraint::<u32>("tick", |row| &row.tick);
+    _table.add_unique_constraint::<u64>("key", |row| &row.key);
 }
 
 #[doc(hidden)]

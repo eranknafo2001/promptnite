@@ -3,10 +3,14 @@
 //! The rest of the client doesn't react to row events. It simply reads the
 //! SDK's local cache (`conn.db()`) every frame, which is plenty for a game
 //! with a handful of rows and makes reconnects a non-issue.
+//!
+//! A player picks a room every time the app starts ([`Session`]). Until then
+//! we only subscribe to our own player row; once the server has put us in a
+//! room we subscribe to that room's rows and nothing else.
 
 use bevy::prelude::*;
 use bevy_stdb::prelude::*;
-use promptnite_bindings::*;
+use promptnite_bindings::{sdk::Identity, *};
 
 pub type Conn = StdbConnection<DbConnection>;
 type Subs = StdbSubscriptions<SubKey, RemoteModule>;
@@ -17,7 +21,8 @@ const DEFAULT_DATABASE: &str = "promptnite";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SubKey {
-    Game,
+    Me,
+    Room,
     Players,
     Submissions,
     Frames,
@@ -30,6 +35,39 @@ enum SubKey {
 pub struct Server {
     pub uri: String,
     pub database: String,
+}
+
+/// The name and room the player chose at this launch.
+#[derive(Resource, Default)]
+pub struct Session {
+    joined: Option<(String, String)>,
+    /// The server hasn't been told yet (or not since the last reconnect).
+    unsent: bool,
+}
+
+impl Session {
+    pub fn join(&mut self, name: String, room: String) {
+        self.joined = Some((name, room));
+        self.unsent = true;
+    }
+
+    pub fn has_joined(&self) -> bool {
+        self.joined.is_some()
+    }
+}
+
+/// Our own player row, if we ever played on this identity.
+pub fn me(conn: &Conn) -> Option<Player> {
+    conn.db().player().identity().find(&conn.try_identity()?)
+}
+
+/// Us and the room we are in, once the server has let us in.
+pub fn my_room(conn: &Conn) -> Option<(Player, Room)> {
+    // `online` is only set by joining, so a row left over from an earlier
+    // launch doesn't count.
+    let me = me(conn).filter(|me| me.online)?;
+    let room = conn.db().room().id().find(&me.room_id)?;
+    Some((me, room))
 }
 
 pub fn plugin(app: &mut App) {
@@ -54,8 +92,9 @@ pub fn plugin(app: &mut App) {
             .with_background_driver(driver),
     )
     .insert_resource(server)
+    .init_resource::<Session>()
     .add_systems(Startup, connect)
-    .add_systems(Update, on_connected);
+    .add_systems(Update, (on_connected, send_join, follow_room).chain());
 }
 
 fn connect(mut cmds: Cmds) {
@@ -65,20 +104,69 @@ fn connect(mut cmds: Cmds) {
     });
 }
 
-fn on_connected(mut connected: ReadStdbConnectedMessage, mut subs: ResMut<Subs>) {
+fn on_connected(
+    mut connected: ReadStdbConnectedMessage,
+    mut subs: ResMut<Subs>,
+    mut session: ResMut<Session>,
+) {
     let Some(message) = connected.read().last() else {
         return;
     };
     info!("connected as {}", message.identity);
     token::save(&message.access_token);
+    // The server forgets that we are in the room when the connection drops.
+    session.unsent = session.joined.is_some();
 
-    subs.subscribe_query(SubKey::Game, |q| q.from.game());
-    subs.subscribe_query(SubKey::Players, |q| q.from.player());
-    subs.subscribe_query(SubKey::Submissions, |q| q.from.submission());
-    subs.subscribe_query(SubKey::Frames, |q| q.from.frame());
-    subs.subscribe_query(SubKey::Faults, |q| q.from.match_fault());
+    let identity: Identity = message.identity;
+    subs.subscribe_query(SubKey::Me, |q| {
+        q.from
+            .player()
+            .r#where(|player| player.identity.eq(identity))
+    });
     // A view: the server only ever sends us our own row.
     subs.subscribe_query(SubKey::MyScript, |q| q.from.my_script());
+}
+
+fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
+    if !session.unsent {
+        return;
+    }
+    let Some(conn) = conn.filter(|conn| conn.is_active()) else {
+        return;
+    };
+    if let Some((name, room)) = session.joined.clone() {
+        match conn.reducers().join(name, room) {
+            Ok(()) => session.unsent = false,
+            Err(err) => warn!("could not join: {err}"),
+        }
+    }
+}
+
+/// Subscribe to the rows of whichever room we are in.
+fn follow_room(conn: Option<Res<Conn>>, mut subs: ResMut<Subs>, mut following: Local<u32>) {
+    // Not `my_room`: the room's row only arrives through these subscriptions.
+    let Some(me) = conn.as_deref().and_then(me).filter(|me| me.online) else {
+        return;
+    };
+    let id = me.room_id;
+    if *following == id {
+        return;
+    }
+    *following = id;
+    // Subscribing again under the same key replaces the previous room's query.
+    subs.subscribe_query(SubKey::Room, |q| q.from.room().r#where(|c| c.id.eq(id)));
+    subs.subscribe_query(SubKey::Players, |q| {
+        q.from.player().r#where(|c| c.room_id.eq(id))
+    });
+    subs.subscribe_query(SubKey::Submissions, |q| {
+        q.from.submission().r#where(|c| c.room_id.eq(id))
+    });
+    subs.subscribe_query(SubKey::Frames, |q| {
+        q.from.frame().r#where(|c| c.room_id.eq(id))
+    });
+    subs.subscribe_query(SubKey::Faults, |q| {
+        q.from.match_fault().r#where(|c| c.room_id.eq(id))
+    });
 }
 
 /// A setting from `?key=value` in the page URL (browser) or an environment

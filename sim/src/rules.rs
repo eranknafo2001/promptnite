@@ -6,8 +6,11 @@
 /// Simulation steps per second of match time.
 pub const TICKS_PER_SEC: u32 = 10;
 
-/// Hard cap on match length: 60 seconds.
-pub const MAX_TICKS: u32 = 60 * TICKS_PER_SEC;
+/// How long a match may last, in seconds. A room's owner picks a length in
+/// `MIN_MATCH_SECS..=MAX_MATCH_SECS`; new rooms start with the default.
+pub const DEFAULT_MATCH_SECS: u32 = 60;
+pub const MIN_MATCH_SECS: u32 = 15;
+pub const MAX_MATCH_SECS: u32 = 120;
 
 /// The arena is a square centred on the origin, spanning
 /// `-ARENA_HALF_SIZE..=ARENA_HALF_SIZE` on both axes.

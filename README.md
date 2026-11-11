@@ -27,8 +27,11 @@ make client    # desktop client
 make web       # browser client on http://127.0.0.1:8080
 ```
 
-Alone, you fight the house bot. For a second player open another browser tab
-or start another desktop client.
+When the client opens, enter a name and a room id. Everyone who enters the
+same room id plays together; whoever got there first owns the room and sets
+the match length and whether the house bot fights. Alone, you fight the house
+bot. For a second player open another browser tab or start another desktop
+client and enter the same room id.
 
 Published like this, there is no agent: every prompt gets the built-in example
 bot, which is enough to try the game loop.

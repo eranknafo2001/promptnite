@@ -8,8 +8,12 @@ use super::phase_type::Phase;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub struct Game {
+pub struct Room {
     pub id: u32,
+    pub code: String,
+    pub owner: u32,
+    pub match_secs: u32,
+    pub house_bot: bool,
     pub round: u32,
     pub phase: Phase,
     pub phase_ends_at: Option<__sdk::Timestamp>,
@@ -22,32 +26,40 @@ pub struct Game {
     pub max_hp: i32,
 }
 
-impl __sdk::InModule for Game {
+impl __sdk::InModule for Room {
     type Module = super::RemoteModule;
 }
 
-/// Column accessor struct for the table `Game`.
+/// Column accessor struct for the table `Room`.
 ///
 /// Provides typed access to columns for query building.
-pub struct GameCols {
-    pub id: __sdk::__query_builder::Col<Game, u32>,
-    pub round: __sdk::__query_builder::Col<Game, u32>,
-    pub phase: __sdk::__query_builder::Col<Game, Phase>,
-    pub phase_ends_at: __sdk::__query_builder::Col<Game, Option<__sdk::Timestamp>>,
-    pub match_ticks: __sdk::__query_builder::Col<Game, u32>,
-    pub winner: __sdk::__query_builder::Col<Game, Option<u32>>,
-    pub ticks_per_sec: __sdk::__query_builder::Col<Game, u32>,
-    pub arena_half_size: __sdk::__query_builder::Col<Game, f32>,
-    pub bot_radius: __sdk::__query_builder::Col<Game, f32>,
-    pub attack_range: __sdk::__query_builder::Col<Game, f32>,
-    pub max_hp: __sdk::__query_builder::Col<Game, i32>,
+pub struct RoomCols {
+    pub id: __sdk::__query_builder::Col<Room, u32>,
+    pub code: __sdk::__query_builder::Col<Room, String>,
+    pub owner: __sdk::__query_builder::Col<Room, u32>,
+    pub match_secs: __sdk::__query_builder::Col<Room, u32>,
+    pub house_bot: __sdk::__query_builder::Col<Room, bool>,
+    pub round: __sdk::__query_builder::Col<Room, u32>,
+    pub phase: __sdk::__query_builder::Col<Room, Phase>,
+    pub phase_ends_at: __sdk::__query_builder::Col<Room, Option<__sdk::Timestamp>>,
+    pub match_ticks: __sdk::__query_builder::Col<Room, u32>,
+    pub winner: __sdk::__query_builder::Col<Room, Option<u32>>,
+    pub ticks_per_sec: __sdk::__query_builder::Col<Room, u32>,
+    pub arena_half_size: __sdk::__query_builder::Col<Room, f32>,
+    pub bot_radius: __sdk::__query_builder::Col<Room, f32>,
+    pub attack_range: __sdk::__query_builder::Col<Room, f32>,
+    pub max_hp: __sdk::__query_builder::Col<Room, i32>,
 }
 
-impl __sdk::__query_builder::HasCols for Game {
-    type Cols = GameCols;
+impl __sdk::__query_builder::HasCols for Room {
+    type Cols = RoomCols;
     fn cols(table_name: &'static str) -> Self::Cols {
-        GameCols {
+        RoomCols {
             id: __sdk::__query_builder::Col::new(table_name, "id"),
+            code: __sdk::__query_builder::Col::new(table_name, "code"),
+            owner: __sdk::__query_builder::Col::new(table_name, "owner"),
+            match_secs: __sdk::__query_builder::Col::new(table_name, "match_secs"),
+            house_bot: __sdk::__query_builder::Col::new(table_name, "house_bot"),
             round: __sdk::__query_builder::Col::new(table_name, "round"),
             phase: __sdk::__query_builder::Col::new(table_name, "phase"),
             phase_ends_at: __sdk::__query_builder::Col::new(table_name, "phase_ends_at"),
@@ -62,20 +74,22 @@ impl __sdk::__query_builder::HasCols for Game {
     }
 }
 
-/// Indexed column accessor struct for the table `Game`.
+/// Indexed column accessor struct for the table `Room`.
 ///
 /// Provides typed access to indexed columns for query building.
-pub struct GameIxCols {
-    pub id: __sdk::__query_builder::IxCol<Game, u32>,
+pub struct RoomIxCols {
+    pub code: __sdk::__query_builder::IxCol<Room, String>,
+    pub id: __sdk::__query_builder::IxCol<Room, u32>,
 }
 
-impl __sdk::__query_builder::HasIxCols for Game {
-    type IxCols = GameIxCols;
+impl __sdk::__query_builder::HasIxCols for Room {
+    type IxCols = RoomIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
-        GameIxCols {
+        RoomIxCols {
+            code: __sdk::__query_builder::IxCol::new(table_name, "code"),
             id: __sdk::__query_builder::IxCol::new(table_name, "id"),
         }
     }
 }
 
-impl __sdk::__query_builder::CanBeLookupTable for Game {}
+impl __sdk::__query_builder::CanBeLookupTable for Room {}

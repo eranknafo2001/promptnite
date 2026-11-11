@@ -10,6 +10,7 @@ pub struct Player {
     pub identity: __sdk::Identity,
     pub id: u32,
     pub name: String,
+    pub room_id: u32,
     pub online: bool,
 }
 
@@ -24,6 +25,7 @@ pub struct PlayerCols {
     pub identity: __sdk::__query_builder::Col<Player, __sdk::Identity>,
     pub id: __sdk::__query_builder::Col<Player, u32>,
     pub name: __sdk::__query_builder::Col<Player, String>,
+    pub room_id: __sdk::__query_builder::Col<Player, u32>,
     pub online: __sdk::__query_builder::Col<Player, bool>,
 }
 
@@ -34,6 +36,7 @@ impl __sdk::__query_builder::HasCols for Player {
             identity: __sdk::__query_builder::Col::new(table_name, "identity"),
             id: __sdk::__query_builder::Col::new(table_name, "id"),
             name: __sdk::__query_builder::Col::new(table_name, "name"),
+            room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             online: __sdk::__query_builder::Col::new(table_name, "online"),
         }
     }
@@ -45,6 +48,7 @@ impl __sdk::__query_builder::HasCols for Player {
 pub struct PlayerIxCols {
     pub id: __sdk::__query_builder::IxCol<Player, u32>,
     pub identity: __sdk::__query_builder::IxCol<Player, __sdk::Identity>,
+    pub room_id: __sdk::__query_builder::IxCol<Player, u32>,
 }
 
 impl __sdk::__query_builder::HasIxCols for Player {
@@ -53,6 +57,7 @@ impl __sdk::__query_builder::HasIxCols for Player {
         PlayerIxCols {
             id: __sdk::__query_builder::IxCol::new(table_name, "id"),
             identity: __sdk::__query_builder::IxCol::new(table_name, "identity"),
+            room_id: __sdk::__query_builder::IxCol::new(table_name, "room_id"),
         }
     }
 }

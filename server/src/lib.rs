@@ -1,9 +1,12 @@
 //! Promptnite SpacetimeDB module.
 //!
-//! Owns the lobby, the round loop and the authoritative match simulation.
+//! Owns the rooms, the round loop and the authoritative match simulation.
 //! See docs/GAME_DESIGN.md for the big picture.
 //!
-//! Round loop (one global game for now):
+//! Players meet in rooms: everyone who enters the same room id plays together,
+//! and whoever created the room owns it and picks its settings.
+//!
+//! Round loop (each room runs its own):
 //!
 //!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --8s--> Prompting
 //!
@@ -37,6 +40,11 @@ const COUNTDOWN: Duration = Duration::from_secs(3);
 const RESULTS: Duration = Duration::from_secs(8);
 const MAX_PROMPT_CHARS: usize = 2_000;
 const MAX_NAME_CHARS: usize = 24;
+const MAX_ROOM_CHARS: usize = 24;
+
+/// `Player::room_id` of somebody who has not picked a room yet. Room ids
+/// start at 1.
+const NO_ROOM: u32 = 0;
 
 /// How many scripts the agent may write for one prompt before we give up.
 const MAX_ATTEMPTS: u32 = 2;
@@ -48,7 +56,7 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_millis(450);
 const MAX_SCRIPT_CHARS: usize = 20_000;
 const MAX_ERROR_CHARS: usize = 300;
 
-/// Bot id of the built-in sparring partner that joins when a player is alone.
+/// Bot id of the built-in sparring partner, in rooms that have it switched on.
 /// Player ids start at 1, so 0 is never a real player.
 const HOUSE_BOT_ID: u32 = 0;
 
@@ -76,6 +84,12 @@ pub struct Player {
     #[auto_inc]
     id: u32,
     name: String,
+    /// The room they are in (or were last in, while offline). `NO_ROOM`
+    /// before they picked their first one.
+    #[index(btree)]
+    room_id: u32,
+    /// In the app right now, with a room picked. A player picks a room every
+    /// time they open the app, so this is set by `join`, not by connecting.
     online: bool,
 }
 
@@ -91,11 +105,25 @@ pub enum Phase {
     Results,
 }
 
-/// Single row (`id == 0`) describing the global game.
-#[table(accessor = game, public)]
-pub struct Game {
+/// One game. Everyone who joins with the same code is in the same room.
+#[table(accessor = room, public)]
+pub struct Room {
     #[primary_key]
+    #[auto_inc]
     id: u32,
+    /// What players type to get in. Trimmed and lowercased.
+    #[unique]
+    code: String,
+    /// Player id of whoever created the room. Only they can change the
+    /// settings below.
+    owner: u32,
+
+    // Settings.
+    /// Time limit of a match, in seconds.
+    match_secs: u32,
+    /// Whether the house bot fights in every match.
+    house_bot: bool,
+
     round: u32,
     phase: Phase,
     /// When the current phase ends. `None` while waiting for players.
@@ -128,6 +156,8 @@ pub enum SubmissionStatus {
 pub struct Submission {
     #[primary_key]
     player_id: u32,
+    #[index(btree)]
+    room_id: u32,
     round: u32,
     status: SubmissionStatus,
     /// Why it failed, empty otherwise.
@@ -211,18 +241,32 @@ pub struct BotFrame {
     action: BotAction,
 }
 
-/// The current match, one row per tick. Clients replay these.
+/// A room's current match, one row per tick. Clients replay these.
 #[table(accessor = frame, public)]
 pub struct Frame {
+    /// `frame_key(room_id, tick)`, so a client can look a tick up directly.
     #[primary_key]
+    key: u64,
+    #[index(btree)]
+    room_id: u32,
     tick: u32,
     bots: Vec<BotFrame>,
 }
 
-/// First script error of each bot in the current match.
+/// Room in the high half, tick in the low half. The client computes the same
+/// key (`client/src/arena.rs`).
+fn frame_key(room_id: u32, tick: u32) -> u64 {
+    (room_id as u64) << 32 | tick as u64
+}
+
+/// First script error of each bot in a room's current match.
 #[table(accessor = match_fault, public)]
 pub struct MatchFault {
     #[primary_key]
+    #[auto_inc]
+    id: u64,
+    #[index(btree)]
+    room_id: u32,
     player_id: u32,
     tick: u32,
     message: String,
@@ -234,6 +278,7 @@ pub struct PhaseTimer {
     #[auto_inc]
     scheduled_id: u64,
     scheduled_at: ScheduleAt,
+    room_id: u32,
     round: u32,
     to: Phase,
     /// Carried along so the winner isn't public before the replay ends.
@@ -251,79 +296,145 @@ fn my_script(ctx: &ViewContext) -> Option<BotScript> {
 
 // Lifecycle ----------------------------------------------------------------
 
-#[reducer(init)]
-pub fn init(ctx: &ReducerContext) {
-    ctx.db.game().insert(Game {
-        id: 0,
-        round: 1,
-        phase: Phase::Prompting,
-        phase_ends_at: None,
-        match_ticks: 0,
-        winner: None,
-        ticks_per_sec: rules::TICKS_PER_SEC,
-        arena_half_size: rules::ARENA_HALF_SIZE,
-        bot_radius: rules::BOT_RADIUS,
-        attack_range: rules::ATTACK_RANGE,
-        max_hp: rules::MAX_HP,
-    });
-}
-
-#[reducer(client_connected)]
-pub fn client_connected(ctx: &ReducerContext) {
-    if let Some(player) = ctx.db.player().identity().find(ctx.sender()) {
-        ctx.db.player().identity().update(Player {
-            online: true,
-            ..player
-        });
-    }
-}
-
 #[reducer(client_disconnected)]
 pub fn client_disconnected(ctx: &ReducerContext) {
     if let Some(player) = ctx.db.player().identity().find(ctx.sender()) {
+        let room_id = player.room_id;
         ctx.db.player().identity().update(Player {
             online: false,
             ..player
         });
         // Offline players neither block the round nor fight in it. Their entry
-        // is kept, so a page reload during prompting doesn't lose the script.
-        try_start_match(ctx);
+        // is kept, so a page reload during prompting doesn't lose the script
+        // if they come back to the same room.
+        try_start_match(ctx, room_id);
     }
 }
 
 // Player reducers ----------------------------------------------------------
 
-/// Enter the lobby, or rename yourself.
+/// Enter a room under a name. The first one in creates the room and owns it.
+///
+/// Clients call this every time they open the app, and again after a
+/// reconnect.
 #[reducer]
-pub fn join(ctx: &ReducerContext, name: String) -> Result<(), String> {
+pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), String> {
     let name = name.trim().to_string();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
         return Err(format!("Name must be 1-{MAX_NAME_CHARS} characters"));
     }
-    match ctx.db.player().identity().find(ctx.sender()) {
-        Some(player) => {
-            ctx.db.player().identity().update(Player {
-                name,
-                online: true,
-                ..player
-            });
-        }
-        None => {
+    let code = room.trim().to_lowercase();
+    if code.is_empty() || code.chars().count() > MAX_ROOM_CHARS {
+        return Err(format!("Room id must be 1-{MAX_ROOM_CHARS} characters"));
+    }
+
+    let player = ctx
+        .db
+        .player()
+        .identity()
+        .find(ctx.sender())
+        .unwrap_or_else(|| {
             ctx.db.player().insert(Player {
                 identity: ctx.sender(),
                 id: 0, // auto_inc
-                name,
-                online: true,
-            });
+                name: name.clone(),
+                room_id: NO_ROOM,
+                online: false,
+            })
+        });
+
+    let room = match ctx.db.room().code().find(&code) {
+        Some(room) => {
+            let deserted = !ctx
+                .db
+                .player()
+                .room_id()
+                .filter(room.id)
+                .any(|other| other.online && other.id != player.id);
+            if deserted && room.owner != player.id {
+                // Everybody left: to the newcomer this is a new room.
+                ctx.db.room().id().update(Room {
+                    owner: player.id,
+                    match_secs: rules::DEFAULT_MATCH_SECS,
+                    house_bot: true,
+                    ..room
+                })
+            } else {
+                room
+            }
         }
+        None => ctx.db.room().insert(Room {
+            id: 0, // auto_inc
+            code,
+            owner: player.id,
+            match_secs: rules::DEFAULT_MATCH_SECS,
+            house_bot: true,
+            round: 1,
+            phase: Phase::Prompting,
+            phase_ends_at: None,
+            match_ticks: 0,
+            winner: None,
+            ticks_per_sec: rules::TICKS_PER_SEC,
+            arena_half_size: rules::ARENA_HALF_SIZE,
+            bot_radius: rules::BOT_RADIUS,
+            attack_range: rules::ATTACK_RANGE,
+            max_hp: rules::MAX_HP,
+        }),
+    };
+
+    let left = player.room_id;
+    if left != room.id {
+        // A script belongs to a round of the room it was written in.
+        clear_entry(ctx, player.id);
     }
+    ctx.db.player().identity().update(Player {
+        name,
+        room_id: room.id,
+        online: true,
+        ..player
+    });
+    if left != room.id {
+        // The room they left may have been waiting only for them.
+        try_start_match(ctx, left);
+    }
+    // Coming back online with a ready script may complete this room.
+    try_start_match(ctx, room.id);
+    Ok(())
+}
+
+/// Change your room's settings. Owner only. Takes effect from the next match.
+#[reducer]
+pub fn set_room_settings(
+    ctx: &ReducerContext,
+    match_secs: u32,
+    house_bot: bool,
+) -> Result<(), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.owner != player.id {
+        return Err("Only the room's owner can change its settings".into());
+    }
+    if !(rules::MIN_MATCH_SECS..=rules::MAX_MATCH_SECS).contains(&match_secs) {
+        return Err(format!(
+            "Match length must be {}-{} seconds",
+            rules::MIN_MATCH_SECS,
+            rules::MAX_MATCH_SECS
+        ));
+    }
+    let room_id = room.id;
+    ctx.db.room().id().update(Room {
+        match_secs,
+        house_bot,
+        ..room
+    });
+    // Switching the house bot on may be all a lone, ready player was missing.
+    try_start_match(ctx, room_id);
     Ok(())
 }
 
 /// Hand this round's prompt to your agent.
 #[reducer]
 pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String> {
-    let (player, game) = player_in_prompting(ctx)?;
+    let (player, room) = player_in_prompting(ctx)?;
     let prompt = prompt.trim().to_string();
     if prompt.is_empty() || prompt.chars().count() > MAX_PROMPT_CHARS {
         return Err(format!("Prompt must be 1-{MAX_PROMPT_CHARS} characters"));
@@ -332,13 +443,14 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
     clear_entry(ctx, player.id);
     ctx.db.submission().insert(Submission {
         player_id: player.id,
-        round: game.round,
+        room_id: room.id,
+        round: room.round,
         status: SubmissionStatus::Generating,
         error: String::new(),
     });
     ctx.db.bot_script().insert(BotScript {
         player_id: player.id,
-        round: game.round,
+        round: room.round,
         prompt: prompt.clone(),
         script: String::new(),
     });
@@ -346,12 +458,12 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
     if agent_url(ctx).is_none() {
         // No agent configured: everyone gets the example bot, so the game
         // loop can be tried without a worker or an API key.
-        return accept_script(ctx, player.id, game.round, sim::EXAMPLE_SCRIPT.to_string());
+        return accept_script(ctx, player.id, sim::EXAMPLE_SCRIPT.to_string());
     }
     let job = ctx.db.agent_job().insert(AgentJob {
         id: 0, // auto_inc
         player_id: player.id,
-        round: game.round,
+        round: room.round,
         prompt,
         attempt: 1,
     });
@@ -363,23 +475,24 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
 /// testing the game without an LLM key.
 #[reducer]
 pub fn submit_script(ctx: &ReducerContext, script: String) -> Result<(), String> {
-    let (player, game) = player_in_prompting(ctx)?;
+    let (player, room) = player_in_prompting(ctx)?;
     sim::validate_script(&script)?;
 
     clear_entry(ctx, player.id);
     ctx.db.submission().insert(Submission {
         player_id: player.id,
-        round: game.round,
+        room_id: room.id,
+        round: room.round,
         status: SubmissionStatus::Ready,
         error: String::new(),
     });
     ctx.db.bot_script().insert(BotScript {
         player_id: player.id,
-        round: game.round,
+        round: room.round,
         prompt: "(hand-written script)".into(),
         script,
     });
-    try_start_match(ctx);
+    try_start_match(ctx, room.id);
     Ok(())
 }
 
@@ -462,7 +575,7 @@ pub fn deliver_script(
     match verdict {
         Ok(()) => {
             ctx.db.agent_job().id().delete(job.id);
-            accept_script(ctx, job.player_id, job.round, script)
+            accept_script(ctx, job.player_id, script)
         }
         Err(error) if job.attempt < MAX_ATTEMPTS => {
             log::info!("job {}: script rejected, asking again: {error}", job.id);
@@ -554,12 +667,7 @@ fn job_for_worker(ctx: &ReducerContext, secret: &str, job_id: u64) -> Result<Age
 }
 
 /// A validated script: store it, mark the player ready, maybe start the match.
-fn accept_script(
-    ctx: &ReducerContext,
-    player_id: u32,
-    round: u32,
-    script: String,
-) -> Result<(), String> {
+fn accept_script(ctx: &ReducerContext, player_id: u32, script: String) -> Result<(), String> {
     let entry = ctx
         .db
         .bot_script()
@@ -570,45 +678,39 @@ fn accept_script(
         .bot_script()
         .player_id()
         .update(BotScript { script, ..entry });
-    set_submission(
-        ctx,
-        player_id,
-        round,
-        SubmissionStatus::Ready,
-        String::new(),
-    );
-    try_start_match(ctx);
+    if let Some(room_id) = set_submission(ctx, player_id, SubmissionStatus::Ready, String::new()) {
+        try_start_match(ctx, room_id);
+    }
     Ok(())
 }
 
 fn fail(ctx: &ReducerContext, job: AgentJob, error: String) {
     ctx.db.agent_job().id().delete(job.id);
-    set_submission(
-        ctx,
-        job.player_id,
-        job.round,
-        SubmissionStatus::Failed,
-        error,
-    );
+    set_submission(ctx, job.player_id, SubmissionStatus::Failed, error);
 }
 
 // Round loop ---------------------------------------------------------------
 
-/// Start the match once every online player has a valid script.
-fn try_start_match(ctx: &ReducerContext) {
-    let game = current_game(ctx);
-    if game.phase != Phase::Prompting {
+/// Start the room's match once every online player in it has a valid script.
+fn try_start_match(ctx: &ReducerContext, room_id: u32) {
+    let Some(room) = ctx.db.room().id().find(room_id) else {
+        return;
+    };
+    if room.phase != Phase::Prompting {
         return;
     }
 
     let mut bots = Vec::new();
-    for player in ctx.db.player().iter().filter(|p| p.online) {
+    for player in ctx.db.player().room_id().filter(room_id) {
+        if !player.online {
+            continue;
+        }
         let ready = ctx
             .db
             .submission()
             .player_id()
             .find(player.id)
-            .is_some_and(|s| s.round == game.round && s.status == SubmissionStatus::Ready);
+            .is_some_and(|s| s.round == room.round && s.status == SubmissionStatus::Ready);
         let Some(script) = ctx
             .db
             .bot_script()
@@ -623,31 +725,29 @@ fn try_start_match(ctx: &ReducerContext) {
             script: script.script,
         });
     }
-    if bots.is_empty() {
-        return;
-    }
     // Stable spawn order regardless of table iteration order.
     bots.sort_by_key(|bot| bot.id);
-    if bots.len() == 1 {
+    if room.house_bot && !bots.is_empty() {
         bots.push(sim::BotSpec {
             id: HOUSE_BOT_ID,
             script: sim::EXAMPLE_SCRIPT.to_string(),
         });
     }
+    if bots.len() < 2 {
+        return; // nobody to fight yet
+    }
 
     // Nobody can influence a match after this point, so simulate all of it now
     // and let clients replay the frames.
     let seed = ctx.timestamp.to_micros_since_unix_epoch() as u64;
-    let outcome = sim::run_match(&bots, seed);
+    let outcome = sim::run_match(&bots, seed, room.match_secs * rules::TICKS_PER_SEC);
 
-    for row in ctx.db.frame().iter() {
-        ctx.db.frame().tick().delete(row.tick);
-    }
-    for row in ctx.db.match_fault().iter() {
-        ctx.db.match_fault().player_id().delete(row.player_id);
-    }
+    ctx.db.frame().room_id().delete(room_id);
+    ctx.db.match_fault().room_id().delete(room_id);
     for frame in &outcome.frames {
         ctx.db.frame().insert(Frame {
+            key: frame_key(room_id, frame.tick),
+            room_id,
             tick: frame.tick,
             bots: frame
                 .bots
@@ -670,6 +770,8 @@ fn try_start_match(ctx: &ReducerContext) {
     }
     for fault in outcome.faults {
         ctx.db.match_fault().insert(MatchFault {
+            id: 0, // auto_inc
+            room_id,
             player_id: fault.bot_id,
             tick: fault.tick,
             message: fault.message,
@@ -678,23 +780,31 @@ fn try_start_match(ctx: &ReducerContext) {
 
     let match_ticks = outcome.frames.last().map_or(0, |frame| frame.tick);
     log::info!(
-        "round {}: {} bots, {} ticks, winner {:?}",
-        game.round,
+        "room {:?} round {}: {} bots, {} ticks, winner {:?}",
+        room.code,
+        room.round,
         bots.len(),
         match_ticks,
         outcome.winner
     );
 
-    let round = game.round;
+    let round = room.round;
     let ends_at = ctx.timestamp + COUNTDOWN;
-    ctx.db.game().id().update(Game {
+    ctx.db.room().id().update(Room {
         phase: Phase::Countdown,
         phase_ends_at: Some(ends_at),
         match_ticks,
         winner: None,
-        ..game
+        ..room
     });
-    schedule(ctx, ends_at, round, Phase::Fighting, outcome.winner);
+    schedule(
+        ctx,
+        ends_at,
+        room_id,
+        round,
+        Phase::Fighting,
+        outcome.winner,
+    );
 }
 
 #[reducer]
@@ -703,43 +813,63 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
     if ctx.sender() != ctx.database_identity() {
         return Err("advance_phase is internal".into());
     }
-    let game = current_game(ctx);
-    if timer.round != game.round {
+    let Some(room) = ctx
+        .db
+        .room()
+        .id()
+        .find(timer.room_id)
+        .filter(|room| room.round == timer.round)
+    else {
         return Ok(()); // stale timer
-    }
+    };
+    let room_id = room.id;
 
     match timer.to {
         Phase::Fighting => {
             let length =
-                Duration::from_secs_f32(game.match_ticks as f32 / game.ticks_per_sec.max(1) as f32);
+                Duration::from_secs_f32(room.match_ticks as f32 / room.ticks_per_sec.max(1) as f32);
             let ends_at = ctx.timestamp + length;
-            ctx.db.game().id().update(Game {
+            ctx.db.room().id().update(Room {
                 phase: Phase::Fighting,
                 phase_ends_at: Some(ends_at),
-                ..game
+                ..room
             });
-            schedule(ctx, ends_at, timer.round, Phase::Results, timer.winner);
+            schedule(
+                ctx,
+                ends_at,
+                room_id,
+                timer.round,
+                Phase::Results,
+                timer.winner,
+            );
         }
         Phase::Results => {
             let ends_at = ctx.timestamp + RESULTS;
-            ctx.db.game().id().update(Game {
+            ctx.db.room().id().update(Room {
                 phase: Phase::Results,
                 phase_ends_at: Some(ends_at),
                 winner: timer.winner,
-                ..game
+                ..room
             });
-            schedule(ctx, ends_at, timer.round, Phase::Prompting, None);
+            schedule(ctx, ends_at, room_id, timer.round, Phase::Prompting, None);
         }
         Phase::Prompting => {
-            for row in ctx.db.submission().iter() {
-                clear_entry(ctx, row.player_id);
+            let entries: Vec<u32> = ctx
+                .db
+                .submission()
+                .room_id()
+                .filter(room_id)
+                .map(|row| row.player_id)
+                .collect();
+            for player_id in entries {
+                clear_entry(ctx, player_id);
             }
-            ctx.db.game().id().update(Game {
-                round: game.round + 1,
+            ctx.db.room().id().update(Room {
+                round: room.round + 1,
                 phase: Phase::Prompting,
                 phase_ends_at: None,
                 winner: None,
-                ..game
+                ..room
             });
         }
         Phase::Countdown => {}
@@ -749,26 +879,30 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
 
 // Helpers ------------------------------------------------------------------
 
-fn current_game(ctx: &ReducerContext) -> Game {
-    ctx.db
-        .game()
-        .id()
-        .find(0)
-        .expect("init inserts the game row")
-}
-
-fn player_in_prompting(ctx: &ReducerContext) -> Result<(Player, Game), String> {
+/// The caller and the room they are in right now.
+fn player_in_room(ctx: &ReducerContext) -> Result<(Player, Room), String> {
     let player = ctx
         .db
         .player()
         .identity()
         .find(ctx.sender())
-        .ok_or("Join the game first")?;
-    let game = current_game(ctx);
-    if game.phase != Phase::Prompting {
+        .filter(|player| player.online)
+        .ok_or("Join a room first")?;
+    let room = ctx
+        .db
+        .room()
+        .id()
+        .find(player.room_id)
+        .ok_or("Join a room first")?;
+    Ok((player, room))
+}
+
+fn player_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.phase != Phase::Prompting {
         return Err("The round already started; wait for the next one".into());
     }
-    Ok((player, game))
+    Ok((player, room))
 }
 
 /// Remove everything a player submitted this round.
@@ -778,26 +912,35 @@ fn clear_entry(ctx: &ReducerContext, player_id: u32) {
     ctx.db.agent_job().player_id().delete(player_id);
 }
 
+/// Update a player's submission, if they still have one. Returns its room.
 fn set_submission(
     ctx: &ReducerContext,
     player_id: u32,
-    round: u32,
     status: SubmissionStatus,
     error: String,
-) {
-    ctx.db.submission().player_id().delete(player_id);
-    ctx.db.submission().insert(Submission {
-        player_id,
-        round,
+) -> Option<u32> {
+    let row = ctx.db.submission().player_id().find(player_id)?;
+    let room_id = row.room_id;
+    ctx.db.submission().player_id().update(Submission {
         status,
         error,
+        ..row
     });
+    Some(room_id)
 }
 
-fn schedule(ctx: &ReducerContext, at: Timestamp, round: u32, to: Phase, winner: Option<u32>) {
+fn schedule(
+    ctx: &ReducerContext,
+    at: Timestamp,
+    room_id: u32,
+    round: u32,
+    to: Phase,
+    winner: Option<u32>,
+) {
     ctx.db.phase_timer().insert(PhaseTimer {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::Time(at),
+        room_id,
         round,
         to,
         winner,

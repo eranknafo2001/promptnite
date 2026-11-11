@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use promptnite_bindings::*;
 
-use crate::net::Conn;
+use crate::net::{self, Conn};
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.
 /// Shared with the UI so the player list matches the spheres.
@@ -32,8 +32,13 @@ pub struct Replay {
     pub bots: Vec<BotView>,
     /// Seconds since we saw the current phase begin.
     pub phase_elapsed: f32,
-    /// `(round, phase)` we last saw, and the app time when it changed.
-    seen: Option<(u32, Phase, f64)>,
+    /// `(room, round, phase)` we last saw, and the app time when it changed.
+    seen: Option<(u32, u32, Phase, f64)>,
+}
+
+/// Primary key of a `frame` row. Must match `frame_key` in the server module.
+fn frame_key(room_id: u32, tick: u32) -> u64 {
+    (room_id as u64) << 32 | tick as u64
 }
 
 pub struct BotView {
@@ -120,36 +125,40 @@ fn replay(
 ) {
     replay.bots.clear();
     let Some(conn) = conn else { return };
-    let Some(game) = conn.db().game().id().find(&0) else {
+    let Some((_, room)) = net::my_room(&conn) else {
         return;
     };
-    floor.scale = Vec3::new(game.arena_half_size * 2.0, 1.0, game.arena_half_size * 2.0);
+    floor.scale = Vec3::new(room.arena_half_size * 2.0, 1.0, room.arena_half_size * 2.0);
 
     // We time the replay from the moment we *see* the phase change instead of
     // comparing clocks with the server, so a wrong local clock can't break it.
     let now = time.elapsed_secs_f64();
     let started = match replay.seen {
-        Some((round, phase, started)) if round == game.round && phase == game.phase => started,
+        Some((id, round, phase, started))
+            if id == room.id && round == room.round && phase == room.phase =>
+        {
+            started
+        }
         _ => {
-            replay.seen = Some((game.round, game.phase, now));
+            replay.seen = Some((room.id, room.round, room.phase, now));
             now
         }
     };
     replay.phase_elapsed = (now - started) as f32;
 
-    let last = game.match_ticks as f32;
-    let tick = match game.phase {
+    let last = room.match_ticks as f32;
+    let tick = match room.phase {
         Phase::Countdown => 0.0,
-        Phase::Fighting => (replay.phase_elapsed * game.ticks_per_sec as f32).min(last),
+        Phase::Fighting => (replay.phase_elapsed * room.ticks_per_sec as f32).min(last),
         // Results, and Prompting for the next round: leave the final frame up.
         Phase::Results | Phase::Prompting => last,
     };
 
     let frames = conn.db().frame();
-    let Some(from) = frames.tick().find(&(tick.floor() as u32)) else {
+    let Some(from) = frames.key().find(&frame_key(room.id, tick.floor() as u32)) else {
         return;
     };
-    let to = frames.tick().find(&(tick.ceil() as u32));
+    let to = frames.key().find(&frame_key(room.id, tick.ceil() as u32));
     let blend = tick.fract();
 
     for bot in &from.bots {
@@ -163,8 +172,8 @@ fn replay(
         replay.bots.push(BotView {
             id: bot.player_id,
             // Sim (x, y) is the ground plane; Bevy's up axis is Y.
-            position: Vec3::new(x, game.bot_radius, y),
-            radius: game.bot_radius,
+            position: Vec3::new(x, room.bot_radius, y),
+            radius: room.bot_radius,
             hp: next.hp,
             action: next.action,
         });

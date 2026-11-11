@@ -10,6 +10,7 @@ use super::submission_status_type::SubmissionStatus;
 #[sats(crate = __lib)]
 pub struct Submission {
     pub player_id: u32,
+    pub room_id: u32,
     pub round: u32,
     pub status: SubmissionStatus,
     pub error: String,
@@ -24,6 +25,7 @@ impl __sdk::InModule for Submission {
 /// Provides typed access to columns for query building.
 pub struct SubmissionCols {
     pub player_id: __sdk::__query_builder::Col<Submission, u32>,
+    pub room_id: __sdk::__query_builder::Col<Submission, u32>,
     pub round: __sdk::__query_builder::Col<Submission, u32>,
     pub status: __sdk::__query_builder::Col<Submission, SubmissionStatus>,
     pub error: __sdk::__query_builder::Col<Submission, String>,
@@ -34,6 +36,7 @@ impl __sdk::__query_builder::HasCols for Submission {
     fn cols(table_name: &'static str) -> Self::Cols {
         SubmissionCols {
             player_id: __sdk::__query_builder::Col::new(table_name, "player_id"),
+            room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             round: __sdk::__query_builder::Col::new(table_name, "round"),
             status: __sdk::__query_builder::Col::new(table_name, "status"),
             error: __sdk::__query_builder::Col::new(table_name, "error"),
@@ -46,6 +49,7 @@ impl __sdk::__query_builder::HasCols for Submission {
 /// Provides typed access to indexed columns for query building.
 pub struct SubmissionIxCols {
     pub player_id: __sdk::__query_builder::IxCol<Submission, u32>,
+    pub room_id: __sdk::__query_builder::IxCol<Submission, u32>,
 }
 
 impl __sdk::__query_builder::HasIxCols for Submission {
@@ -53,6 +57,7 @@ impl __sdk::__query_builder::HasIxCols for Submission {
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         SubmissionIxCols {
             player_id: __sdk::__query_builder::IxCol::new(table_name, "player_id"),
+            room_id: __sdk::__query_builder::IxCol::new(table_name, "room_id"),
         }
     }
 }

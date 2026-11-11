@@ -11,6 +11,7 @@ use super::phase_type::Phase;
 pub struct PhaseTimer {
     pub scheduled_id: u64,
     pub scheduled_at: __sdk::ScheduleAt,
+    pub room_id: u32,
     pub round: u32,
     pub to: Phase,
     pub winner: Option<u32>,
@@ -26,6 +27,7 @@ impl __sdk::InModule for PhaseTimer {
 pub struct PhaseTimerCols {
     pub scheduled_id: __sdk::__query_builder::Col<PhaseTimer, u64>,
     pub scheduled_at: __sdk::__query_builder::Col<PhaseTimer, __sdk::ScheduleAt>,
+    pub room_id: __sdk::__query_builder::Col<PhaseTimer, u32>,
     pub round: __sdk::__query_builder::Col<PhaseTimer, u32>,
     pub to: __sdk::__query_builder::Col<PhaseTimer, Phase>,
     pub winner: __sdk::__query_builder::Col<PhaseTimer, Option<u32>>,
@@ -37,6 +39,7 @@ impl __sdk::__query_builder::HasCols for PhaseTimer {
         PhaseTimerCols {
             scheduled_id: __sdk::__query_builder::Col::new(table_name, "scheduled_id"),
             scheduled_at: __sdk::__query_builder::Col::new(table_name, "scheduled_at"),
+            room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             round: __sdk::__query_builder::Col::new(table_name, "round"),
             to: __sdk::__query_builder::Col::new(table_name, "to"),
             winner: __sdk::__query_builder::Col::new(table_name, "winner"),
