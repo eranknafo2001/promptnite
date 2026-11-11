@@ -16,8 +16,25 @@ pub const MAX_MATCH_SECS: u32 = 120;
 /// `-ARENA_HALF_SIZE..=ARENA_HALF_SIZE` on both axes.
 pub const ARENA_HALF_SIZE: f32 = 10.0;
 
-/// Bots spawn evenly spaced on a circle of this radius.
-pub const SPAWN_RADIUS: f32 = 7.0;
+/// The arena has four edges and every bot starts at its own, so this is also
+/// how many players fit in a room.
+pub const MAX_BOTS: usize = 4;
+
+/// Bots start at the middle of their edge, this far in from the wall.
+pub const SPAWN_INSET: f32 = 1.5;
+
+/// Unit vector from the arena's centre towards edge `edge` (`0..MAX_BOTS`).
+/// Edges 0 and 1 face each other, so two players start on opposite sides.
+/// The client has the same table (`client/src/arena.rs`) to put each player's
+/// camera behind their own edge.
+pub fn edge_direction(edge: u32) -> (f32, f32) {
+    match edge % MAX_BOTS as u32 {
+        0 => (0.0, 1.0),
+        1 => (0.0, -1.0),
+        2 => (1.0, 0.0),
+        _ => (-1.0, 0.0),
+    }
+}
 
 /// Collision/visual radius of a bot.
 pub const BOT_RADIUS: f32 = 0.5;

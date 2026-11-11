@@ -10,9 +10,13 @@ use crate::{
     rules,
 };
 
-/// One participant: who they are and the Lua their agent wrote.
+/// One participant: who they are, where they start and the Lua their agent
+/// wrote.
 pub struct BotSpec {
     pub id: u32,
+    /// Which edge of the arena the bot starts at, see `rules::edge_direction`.
+    /// No two bots of a match should share one.
+    pub edge: u32,
     pub script: String,
 }
 
@@ -123,13 +127,12 @@ fn separate(bots: &mut [Bot], limit: f32) {
 /// given `(specs, seed, max_ticks)`.
 pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
     let mut faults = Vec::new();
-    let count = specs.len().max(1) as f32;
+    let spawn_dist = rules::ARENA_HALF_SIZE - rules::SPAWN_INSET;
 
     let mut bots: Vec<Bot> = specs
         .iter()
-        .enumerate()
-        .map(|(i, spec)| {
-            let angle = i as f32 / count * std::f32::consts::TAU;
+        .map(|spec| {
+            let (dx, dy) = rules::edge_direction(spec.edge);
             let lua = match LuaBot::new(&spec.script, seed.wrapping_add(spec.id as u64)) {
                 Ok(lua) => Some(lua),
                 Err(message) => {
@@ -143,8 +146,8 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
             };
             Bot {
                 id: spec.id,
-                x: rules::SPAWN_RADIUS * angle.cos(),
-                y: rules::SPAWN_RADIUS * angle.sin(),
+                x: dx * spawn_dist,
+                y: dy * spawn_dist,
                 hp: rules::MAX_HP,
                 cooldown: 0,
                 faulted: lua.is_none(),
@@ -345,6 +348,7 @@ mod tests {
     fn spec(id: u32, script: &str) -> BotSpec {
         BotSpec {
             id,
+            edge: id - 1,
             script: script.to_string(),
         }
     }
@@ -484,10 +488,20 @@ mod tests {
         let puncher = r#"function tick() return "attack" end"#;
         let outcome = run_match(&[spec(1, puncher), spec(2, IDLE)], 0);
         assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
-        // Never in range (spawned 14 apart), so nobody takes damage.
+        // Never in range (spawned on opposite edges), so nobody takes damage.
         assert_eq!(outcome.frames.last().unwrap().bots[1].hp, rules::MAX_HP);
         assert_eq!(outcome.frames[1].bots[0].action, ActionKind::Miss);
     }
+
+    #[test]
+    fn bots_start_at_their_own_edge() {
+        let specs: Vec<BotSpec> = (1..=4).map(|id| spec(id, IDLE)).collect();
+        let outcome = super::run_match(&specs, 0, 1);
+        let d = rules::ARENA_HALF_SIZE - rules::SPAWN_INSET;
+        let at: Vec<(f32, f32)> = outcome.frames[0].bots.iter().map(|b| (b.x, b.y)).collect();
+        assert_eq!(at, [(0.0, d), (0.0, -d), (d, 0.0), (-d, 0.0)]);
+    }
+
     #[test]
     fn living_bots_do_not_overlap() {
         // Two chasers walk straight at each other and would otherwise merge.

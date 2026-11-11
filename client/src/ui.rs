@@ -358,6 +358,15 @@ fn join_screen(ctx: &egui::Context, conn: &Conn, form: &mut Form, session: &mut 
                     .size(13.0)
                     .color(egui::Color32::from_white_alpha(170)),
                 );
+                // Why the server turned the last attempt away (room full).
+                if let Some(error) = &session.error {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(error)
+                            .size(13.0)
+                            .color(egui::Color32::LIGHT_RED),
+                    );
+                }
 
                 // A single-line box gives up the focus on Enter. Whichever box
                 // is still empty gets it next; with both filled in, we join.

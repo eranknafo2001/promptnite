@@ -54,6 +54,19 @@ pub struct BotView {
 #[derive(Component)]
 pub struct ArenaCamera;
 
+/// Tilted view from behind edge `edge` of the arena, looking across it.
+/// The edge table must match `edge_direction` in `sim/src/rules.rs`.
+fn camera_transform(edge: u32) -> Transform {
+    // Sim (x, y) is the ground plane; Bevy's up axis is Y.
+    let outward = match edge % 4 {
+        0 => Vec3::Z,
+        1 => Vec3::NEG_Z,
+        2 => Vec3::X,
+        _ => Vec3::NEG_X,
+    };
+    Transform::from_translation(outward * 19.0 + Vec3::Y * 21.0).looking_at(outward, Vec3::Y)
+}
+
 #[derive(Component)]
 struct Floor;
 
@@ -70,7 +83,7 @@ struct BotAssets {
 pub fn plugin(app: &mut App) {
     app.init_resource::<Replay>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (replay, sync_bots).chain());
+        .add_systems(Update, (point_of_view, (replay, sync_bots).chain()));
 }
 
 fn setup(
@@ -99,12 +112,8 @@ fn setup(
         Transform::from_xyz(6.0, 14.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // Tilted view from one side, like the original sketch.
-    commands.spawn((
-        ArenaCamera,
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 21.0, 19.0).looking_at(Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
-    ));
+    // Moved behind the player's own edge once they are in a room.
+    commands.spawn((ArenaCamera, Camera3d::default(), camera_transform(0)));
 
     commands.insert_resource(BotAssets {
         mesh: meshes.add(Sphere::new(1.0)),
@@ -114,6 +123,17 @@ fn setup(
             .collect(),
         dead: materials.add(Color::srgb(0.25, 0.25, 0.27)),
     });
+}
+
+/// Everybody watches the arena from behind the edge their own bot starts at.
+fn point_of_view(conn: Option<Res<Conn>>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
+    let Some((me, _)) = conn.as_deref().and_then(net::my_room) else {
+        return;
+    };
+    let wanted = camera_transform(me.edge);
+    if **camera != wanted {
+        **camera = wanted;
+    }
 }
 
 /// Decide which tick to show and blend the frames around it.

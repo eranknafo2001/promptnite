@@ -28,7 +28,7 @@ make web       # browser client on http://127.0.0.1:8080
 ```
 
 When the client opens, enter a name and a room id. Everyone who enters the
-same room id plays together; whoever got there first owns the room and sets
+same room id plays together, up to four players; whoever got there first owns the room and sets
 the match length and whether the house bot fights. Alone, you fight the house
 bot. For a second player open another browser tab or start another desktop
 client and enter the same room id.
