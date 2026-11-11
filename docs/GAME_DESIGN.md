@@ -84,14 +84,33 @@ Globals persist between ticks, so a script can remember things.
 
 ## Screen layout
 
-From the original sketch: the arena seen from a tilted camera with a sphere per
-bot, a panel on the right, and a long prompt bar along the bottom.
+The arena fills the whole window, seen from a tilted camera with a sphere per
+bot. Everything else floats over it; there are no panels.
 
-- **Arena**: bots with name and health bar, big countdown / result text.
-- **Right panel**: room, round and phase, the room's settings (controls for
-  the owner), players and whether their agent is done, the Lua your own agent
-  wrote, script errors.
-- **Bottom bar**: name and room id entry, then the prompt box.
+- **Icon**: top centre, always.
+- **Join screen**: on every launch, two boxes in the middle of the window ask
+  for the player's name and the room id. Enter joins.
+- **Prompt box**: once per round, the bottom 20% of the window is a multi-line
+  text box. Enter adds a line, Command+Enter (or Ctrl+Enter) sends the prompt.
+  Its footer shows the round. If the agent failed, the reason appears just
+  above the box and the player prompts again.
+- **Status line**: after sending, the box is replaced by one line at the
+  bottom ("Your agent is building your bot…", "Waiting for Ada…").
+- **Room and players**: top right. First the room id and its match length,
+  then everyone in the room who is online, each with their bot's colour, who
+  the owner is, and what they are doing: writing a prompt, agent is building,
+  agent failed, ready, fighting, knocked out, won, still standing, or watching
+  (they joined while a match was already running). The house bot is listed
+  too while it is part of the game.
+- **Room settings**: top left, for the room's owner only and only during
+  prompting: the controls for match length and house bot.
+- **Arena overlays**: name and health bar above each bot, the big countdown
+  and result text, and (top left, during and after a fight) scripts that broke.
+
+Text boxes are 80% opaque, so the arena shows through faintly.
+
+The player never sees Lua, not even their own bot's: the client has no way to
+read scripts.
 
 ## Architecture
 
@@ -137,8 +156,9 @@ Decisions worth knowing about:
   the submission fails and the player can prompt again.
 - **Small, fast models by default** (`claude-haiku-5-5`, `gpt-6-luna`). A bot
   script is a small task and everyone is waiting on the slowest agent.
-- **Private by default.** Prompts and scripts are in private tables; a player
-  sees only their own script through a view.
+- **Private by default.** Prompts and scripts are in private tables that no
+  client can read, their owner included. Clients only see the public
+  `submission` status (generating, ready, or failed and why).
 - **A house bot** (the reference chaser) fights in every match unless the
   room's owner switches it off, so the loop can be played solo.
 - **Clients only subscribe to their own room.** Every room-scoped table has a

@@ -19,7 +19,6 @@ pub mod job_timeout_type;
 pub mod join_reducer;
 pub mod match_fault_table;
 pub mod match_fault_type;
-pub mod my_script_table;
 pub mod phase_timer_type;
 pub mod phase_type;
 pub mod player_table;
@@ -46,7 +45,6 @@ pub use job_timeout_type::JobTimeout;
 pub use join_reducer::join;
 pub use match_fault_table::*;
 pub use match_fault_type::MatchFault;
-pub use my_script_table::*;
 pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
 pub use player_table::*;
@@ -163,7 +161,6 @@ impl __sdk::Reducer for Reducer {
 pub struct DbUpdate {
     frame: __sdk::TableUpdate<Frame>,
     match_fault: __sdk::TableUpdate<MatchFault>,
-    my_script: __sdk::TableUpdate<BotScript>,
     player: __sdk::TableUpdate<Player>,
     room: __sdk::TableUpdate<Room>,
     submission: __sdk::TableUpdate<Submission>,
@@ -181,9 +178,6 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "match_fault" => db_update
                     .match_fault
                     .append(match_fault_table::parse_table_update(table_update)?),
-                "my_script" => db_update
-                    .my_script
-                    .append(my_script_table::parse_table_update(table_update)?),
                 "player" => db_update
                     .player
                     .append(player_table::parse_table_update(table_update)?),
@@ -234,7 +228,6 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.submission = cache
             .apply_diff_to_table::<Submission>("submission", &self.submission)
             .with_updates_by_pk(|row| &row.player_id);
-        diff.my_script = cache.apply_diff_to_table::<BotScript>("my_script", &self.my_script);
 
         diff
     }
@@ -247,9 +240,6 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "match_fault" => db_update
                     .match_fault
-                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "my_script" => db_update
-                    .my_script
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "player" => db_update
                     .player
@@ -279,9 +269,6 @@ impl __sdk::DbUpdate for DbUpdate {
                 "match_fault" => db_update
                     .match_fault
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "my_script" => db_update
-                    .my_script
-                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "player" => db_update
                     .player
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -308,7 +295,6 @@ impl __sdk::DbUpdate for DbUpdate {
 pub struct AppliedDiff<'r> {
     frame: __sdk::TableAppliedDiff<'r, Frame>,
     match_fault: __sdk::TableAppliedDiff<'r, MatchFault>,
-    my_script: __sdk::TableAppliedDiff<'r, BotScript>,
     player: __sdk::TableAppliedDiff<'r, Player>,
     room: __sdk::TableAppliedDiff<'r, Room>,
     submission: __sdk::TableAppliedDiff<'r, Submission>,
@@ -327,7 +313,6 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
     ) {
         callbacks.invoke_table_row_callbacks::<Frame>("frame", &self.frame, event);
         callbacks.invoke_table_row_callbacks::<MatchFault>("match_fault", &self.match_fault, event);
-        callbacks.invoke_table_row_callbacks::<BotScript>("my_script", &self.my_script, event);
         callbacks.invoke_table_row_callbacks::<Player>("player", &self.player, event);
         callbacks.invoke_table_row_callbacks::<Room>("room", &self.room, event);
         callbacks.invoke_table_row_callbacks::<Submission>("submission", &self.submission, event);
@@ -586,19 +571,19 @@ impl __sdk::SubscriptionHandle for SubscriptionHandle {
 /// either a [`DbConnection`] or an [`EventContext`] and operate on either.
 pub trait RemoteDbContext:
     __sdk::DbContext<
-    DbView = RemoteTables,
-    Reducers = RemoteReducers,
-    SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
->
+        DbView = RemoteTables,
+        Reducers = RemoteReducers,
+        SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
+    >
 {
 }
 impl<
-        Ctx: __sdk::DbContext<
+    Ctx: __sdk::DbContext<
             DbView = RemoteTables,
             Reducers = RemoteReducers,
             SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
         >,
-    > RemoteDbContext for Ctx
+> RemoteDbContext for Ctx
 {
 }
 
@@ -993,17 +978,10 @@ impl __sdk::SpacetimeModule for RemoteModule {
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         frame_table::register_table(client_cache);
         match_fault_table::register_table(client_cache);
-        my_script_table::register_table(client_cache);
         player_table::register_table(client_cache);
         room_table::register_table(client_cache);
         submission_table::register_table(client_cache);
     }
-    const ALL_TABLE_NAMES: &'static [&'static str] = &[
-        "frame",
-        "match_fault",
-        "my_script",
-        "player",
-        "room",
-        "submission",
-    ];
+    const ALL_TABLE_NAMES: &'static [&'static str] =
+        &["frame", "match_fault", "player", "room", "submission"];
 }
