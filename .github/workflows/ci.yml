@@ -44,10 +44,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: native
-      # bindings/ is generated code and is not formatted; the module job checks
-      # it is up to date instead.
       - name: Format
-        run: cargo fmt --check -p promptnite-sim -p promptnite-server -p promptnite
+        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --exclude promptnite-server --all-targets -- -D warnings
       - name: Test
@@ -60,7 +58,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
           rustup default stable
       - uses: ./.github/actions/setup-spacetime
       - uses: Swatinem/rust-cache@v2

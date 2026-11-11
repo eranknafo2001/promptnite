@@ -25,9 +25,12 @@ server:
 publish:
 	AGENT_URL=$(AGENT_URL) AGENT_SECRET=$(AGENT_SECRET) spacetime publish $(DB) --yes
 
-# Regenerate bindings/ after changing tables or reducers in server/.
+# Regenerate bindings/ after changing tables or reducers in server/. The
+# generator formats in its own style; `cargo fmt` brings it back to ours, which
+# is what is committed and what CI compares against.
 bindings:
 	spacetime generate --lang rust --out-dir bindings/src/module_bindings --module-path server --yes
+	cargo fmt -p promptnite-bindings
 
 # Needs worker/.dev.vars (copy worker/.dev.vars.example) and `npm install`.
 worker:
