@@ -1,5 +1,6 @@
 //! Effects on top of the replay: when a bot is knocked out it blows up in a
-//! cartoon puff, chunks fly off and the camera shakes. Hand-rolled particles, no physics.
+//! cartoon puff, chunks fly off and the camera shakes. The camera also sways
+//! gently all the time. Hand-rolled particles, no physics.
 
 use bevy::prelude::*;
 use promptnite_bindings::BotAction;
@@ -10,11 +11,11 @@ use crate::{
 };
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Deaths>()
+    app.init_resource::<FxState>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (deaths, puffs, debris, shake.after(arena::point_of_view))
+            (deaths, puffs, debris, camera.after(arena::point_of_view))
                 .chain()
                 .after(arena::sync_bots),
         );
@@ -28,13 +29,16 @@ struct FxAssets {
 }
 
 #[derive(Resource, Default)]
-struct Deaths {
+struct FxState {
     /// Who was dead last frame.
     dead: Vec<(u32, bool)>,
     /// Counts blasts, so each one looks a little different.
     blasts: u32,
     /// Camera shake in 0..=1; it moves by trauma², so it dies down sharply.
     trauma: f32,
+    /// The camera's steady transform, and what we last wrote over it.
+    steady: Transform,
+    written: Transform,
 }
 
 #[derive(Component)]
@@ -89,7 +93,7 @@ fn deaths(
     replay: Res<Replay>,
     assets: Res<FxAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut state: ResMut<Deaths>,
+    mut state: ResMut<FxState>,
 ) {
     let now: Vec<(u32, bool)> = replay
         .bots
@@ -239,24 +243,39 @@ fn debris(
     }
 }
 
-/// Jolt the camera on top of the transform `point_of_view` set. That system
-/// rewrites the camera whenever it differs from where it should be, so each
-/// frame starts from the steady view and the shake never builds up.
-fn shake(
+/// Sway the camera gently and jolt it after a blast, on top of its steady
+/// transform. `point_of_view` only rewrites the camera when it changes the
+/// view, so if the camera still holds what we wrote last frame, the steady
+/// transform is the one we kept; otherwise someone moved it and that is the
+/// new steady one. Either way the offsets never build up.
+fn camera(
     time: Res<Time>,
-    mut state: ResMut<Deaths>,
+    mut state: ResMut<FxState>,
     mut camera: Single<&mut Transform, With<arena::ArenaCamera>>,
 ) {
-    if state.trauma <= 0.0 {
-        return;
+    if **camera != state.written {
+        state.steady = **camera;
     }
-    let amount = state.trauma * state.trauma;
-    state.trauma = (state.trauma - time.delta_secs() / theme::FX_SHAKE_SECS).max(0.0);
-    // Sines at unrelated frequencies make a cheap noise.
+    let mut moved = state.steady;
     let t = time.elapsed_secs();
-    let noise = |k: f32| ((t * 41.0 + k).sin() + (t * 27.0 + k * 3.1).sin()) / 2.0;
-    let right = camera.right();
-    let up = camera.up();
-    camera.translation += (right * noise(0.0) + up * noise(1.7)) * amount * theme::FX_SHAKE_OFFSET;
-    camera.rotate_local_z(noise(4.2) * amount * theme::FX_SHAKE_ROLL);
+
+    // Slow drift: sines at unrelated, long periods so it never visibly loops.
+    let drift = |speed: f32, k: f32| (t * speed + k).sin();
+    let (right, up) = (moved.right(), moved.up());
+    moved.translation += (right * drift(0.31, 0.0) + up * drift(0.23, 2.0)) * theme::CAMERA_SWAY;
+    moved.rotate_local_y(drift(0.19, 4.0) * theme::CAMERA_SWAY_TILT);
+    moved.rotate_local_x(drift(0.27, 1.0) * theme::CAMERA_SWAY_TILT);
+
+    if state.trauma > 0.0 {
+        let amount = state.trauma * state.trauma;
+        state.trauma = (state.trauma - time.delta_secs() / theme::FX_SHAKE_SECS).max(0.0);
+        // Fast sines at unrelated frequencies make a cheap noise.
+        let noise = |k: f32| ((t * 41.0 + k).sin() + (t * 27.0 + k * 3.1).sin()) / 2.0;
+        moved.translation +=
+            (right * noise(0.0) + up * noise(1.7)) * amount * theme::FX_SHAKE_OFFSET;
+        moved.rotate_local_z(noise(4.2) * amount * theme::FX_SHAKE_ROLL);
+    }
+
+    **camera = moved;
+    state.written = moved;
 }

@@ -142,3 +142,7 @@ pub const FX_PUFF: [Color; 4] = [
 pub const FX_SHAKE_OFFSET: f32 = 0.45;
 pub const FX_SHAKE_ROLL: f32 = 0.035;
 pub const FX_SHAKE_SECS: f32 = 0.4;
+/// The camera's constant idle sway: how far it drifts in metres and how
+/// much it tilts in radians.
+pub const CAMERA_SWAY: f32 = 0.25;
+pub const CAMERA_SWAY_TILT: f32 = 0.006;
