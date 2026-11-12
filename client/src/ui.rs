@@ -647,6 +647,9 @@ fn prompt_box(
                     }));
                 }
                 ui.add_space(8.0);
+                let footer_height = if form.touch { TOUCH_BUTTON } else { 28.0 };
+                // A little air between the text and the button under it.
+                let footer_gap = if form.touch { 6.0 } else { 0.0 };
                 // A prompt the server would not take at all comes before one
                 // whose agent failed.
                 let refused = snapshot.prompt_refusal.as_deref();
@@ -655,17 +658,22 @@ fn prompt_box(
                     .or(error.map(|why| ("Your agent couldn't build a bot", why)))
                     .filter(|(_, why)| !why.is_empty());
                 if let Some((heading, why)) = problem {
+                    // A long one scrolls, so the prompt and Send keep their room:
+                    // a few lines of prompt, and the panel's own heading.
+                    let most = (ui.available_height() - footer_height - footer_gap - 150.0)
+                        .max(theme::SIZE_BODY * 1.5);
                     theme::error_panel(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(theme::error_heading(heading));
-                        ui.label(theme::error_body(why));
+                        egui::ScrollArea::vertical()
+                            .id_salt("prompt_problem")
+                            .max_height(most)
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| ui.label(theme::error_body(why)));
                     });
                     ui.add_space(10.0);
                 }
 
-                let footer_height = if form.touch { TOUCH_BUTTON } else { 28.0 };
-                // A little air between the text and the button under it.
-                let footer_gap = if form.touch { 6.0 } else { 0.0 };
                 let text_height = ui.available_height()
                     - footer_height
                     - footer_gap
@@ -674,6 +682,7 @@ fn prompt_box(
                     let text_height = text_height - 16.0;
                     egui::ScrollArea::vertical()
                         .max_height(text_height)
+                        .min_scrolled_height(0.0)
                         .auto_shrink(false)
                         .show(ui, |ui| {
                             let field = clipboard::show(
