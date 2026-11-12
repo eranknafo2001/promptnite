@@ -53,6 +53,20 @@
         visible.addEventListener("scroll", fit);
         fit();
       }
+
+      // On a phone, typing goes to a hidden text box that egui keeps for the
+      // on-screen keyboard, and only its letters and Backspace reach the
+      // game. Hand the game the keyboard's Enter as well, or the join screen
+      // can't be sent from the keyboard and a prompt can't get a new line.
+      const game = document.getElementById("game");
+      for (const type of ["keydown", "keyup"]) {
+        document.addEventListener(type, (event) => {
+          if (event.key !== "Enter" || event.target.id !== "egui_text_agent") return;
+          game.dispatchEvent(
+            new KeyboardEvent(type, { key: "Enter", code: "Enter", bubbles: true }),
+          );
+        });
+      }
     </script>
   </body>
 </html>
