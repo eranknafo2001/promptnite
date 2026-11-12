@@ -80,28 +80,36 @@ pub fn bot_color(id: u32) -> [u8; 3] {
 
 // The interface.
 
+/// Text straight on the arena (banner, join screen title), with a shadow.
 pub const TEXT: Color32 = Color32::WHITE;
-/// Secondary text: hints, states, footers.
-pub const TEXT_MUTED: Color32 = Color32::from_rgba_premultiplied(150, 150, 150, 150);
-/// The explanation under the join form.
-pub const TEXT_HINT: Color32 = Color32::from_rgba_premultiplied(170, 170, 170, 170);
+/// Text on a panel: a warm black, and a warm grey for hints, states, footers.
+pub const INK: Color32 = Color32::from_rgb(0x2a, 0x22, 0x1c);
+pub const INK_MUTED: Color32 = Color32::from_rgb(0x8c, 0x82, 0x78);
 /// A knocked-out bot's name.
 pub const TEXT_DEAD: Color32 = Color32::GRAY;
-pub const GOOD: Color32 = Color32::LIGHT_GREEN;
-pub const BAD: Color32 = Color32::LIGHT_RED;
+/// Dark enough to read on a white panel.
+pub const GOOD: Color32 = Color32::from_rgb(0x1f, 0x8a, 0x3d);
+pub const BAD: Color32 = Color32::from_rgb(0xcf, 0x3a, 0x2a);
 
-/// Text boxes: dark, 80% opaque so the arena shows through, thin outline.
-pub const BOX_FILL: Color32 = Color32::from_rgba_unmultiplied_const(16, 18, 23, 204);
-pub const BOX_STROKE: Color32 = Color32::from_rgba_premultiplied(45, 45, 45, 45);
-pub const BOX_RADIUS: u8 = 10;
-pub const BOX_MARGIN: i8 = 10;
-
-/// The darker backdrop behind single lines and the roster.
-pub const PILL_FILL: Color32 = Color32::from_black_alpha(150);
-pub const PILL_RADIUS: u8 = 8;
+/// Panels (text boxes, pills, cards): white, with a bold warm-black outline
+/// and well rounded corners.
+pub const PANEL_FILL: Color32 = Color32::WHITE;
+pub const PANEL_STROKE: Color32 = INK;
+pub const PANEL_STROKE_WIDTH: f32 = 3.0;
+pub const BOX_RADIUS: u8 = 18;
+pub const BOX_MARGIN: i8 = 18;
+/// A crisp drop shadow under every panel: straight down, no blur.
+pub const PANEL_SHADOW: egui::Shadow = egui::Shadow {
+    offset: [0, 4],
+    blur: 0,
+    spread: 0,
+    color: Color32::from_rgba_premultiplied(0x0b, 0x09, 0x07, 0x48),
+};
+/// The smaller panels: single lines, the roster, the timer, the bot cards.
+pub const PILL_RADIUS: u8 = 14;
 
 pub const TEXT_SHADOW: Color32 = Color32::from_black_alpha(200);
-pub const HP_TRACK: Color32 = Color32::from_black_alpha(160);
+pub const HP_TRACK: Color32 = Color32::from_rgb(0xe8, 0xe2, 0xdc);
 
 /// Space between the window edge and anything placed along it.
 pub const EDGE: f32 = 12.0;
@@ -137,23 +145,51 @@ pub fn set_fonts(ctx: &egui::Context) {
 
 pub fn box_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(BOX_FILL)
-        .stroke(egui::Stroke::new(1.0, BOX_STROKE))
+        .fill(PANEL_FILL)
+        .stroke(panel_stroke())
+        .shadow(PANEL_SHADOW)
         .corner_radius(BOX_RADIUS)
         .inner_margin(BOX_MARGIN)
 }
 
-/// A dark rounded backdrop that keeps a line of text readable on the arena.
+fn panel_stroke() -> egui::Stroke {
+    egui::Stroke::new(PANEL_STROKE_WIDTH, PANEL_STROKE)
+}
+
+/// A panel painted straight onto `painter`, for the parts of the interface
+/// laid out by hand.
+pub fn panel(painter: &egui::Painter, rect: egui::Rect) {
+    painter.add(PANEL_SHADOW.as_shape(rect, PILL_RADIUS));
+    painter.rect(
+        rect,
+        PILL_RADIUS,
+        PANEL_FILL,
+        panel_stroke(),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// A text box inside a panel: outlined like one, without its shadow.
+pub fn field_frame() -> egui::Frame {
+    box_frame()
+        .shadow(egui::Shadow::NONE)
+        .corner_radius(PILL_RADIUS)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+}
+
+/// A small panel around a line of text.
 pub fn pill(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(PILL_FILL)
+        .fill(PANEL_FILL)
+        .stroke(panel_stroke())
+        .shadow(PANEL_SHADOW)
         .corner_radius(PILL_RADIUS)
-        .inner_margin(egui::Margin::symmetric(10, 5))
+        .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, content);
 }
 
 pub fn small(text: &str) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_SMALL).color(TEXT_MUTED)
+    egui::RichText::new(text).size(SIZE_SMALL).color(INK_MUTED)
 }
 
 /// egui's own style editor (widget colours, spacing, rounding), live. What
