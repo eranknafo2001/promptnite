@@ -7,11 +7,7 @@
 use bevy::prelude::*;
 use promptnite_bindings::*;
 
-use crate::{
-    net::Conn,
-    theme::{self, PALETTE},
-    ui::Screen,
-};
+use crate::{net::Conn, theme::PALETTE, ui::Screen};
 
 /// What is on screen this frame. Written here, read by the UI for labels.
 #[derive(Resource, Default)]
@@ -44,24 +40,33 @@ pub struct ArenaCamera;
 /// Tilted view from behind edge `edge` of the arena, looking across it.
 /// The edge table must match `edge_direction` in `sim/src/rules.rs`.
 fn camera_transform(edge: u32) -> Transform {
+    let outward = outward(edge);
+    Transform::from_translation(outward * 19.0 + Vec3::Y * 21.0).looking_at(outward, Vec3::Y)
+}
+
+/// Out from the centre towards edge `edge`.
+fn outward(edge: u32) -> Vec3 {
     // Sim (x, y) is the ground plane; Bevy's up axis is Y.
-    let outward = match edge % 4 {
+    match edge % 4 {
         0 => Vec3::Z,
         1 => Vec3::NEG_Z,
         2 => Vec3::X,
         _ => Vec3::NEG_X,
-    };
-    Transform::from_translation(outward * 19.0 + Vec3::Y * 21.0).looking_at(outward, Vec3::Y)
+    }
 }
 
+/// A bot's sphere, or the tombstone of a knocked-out one.
 #[derive(Component)]
-pub struct Bot(u32);
+pub struct Bot {
+    id: u32,
+    dead: bool,
+}
 
 #[derive(Resource)]
 pub struct BotAssets {
     mesh: Handle<Mesh>,
     alive: Vec<Handle<StandardMaterial>>,
-    dead: Handle<StandardMaterial>,
+    tombstone: Handle<WorldAsset>,
 }
 
 pub fn plugin(app: &mut App) {
@@ -142,7 +147,7 @@ fn setup(
             .iter()
             .map(|&[r, g, b]| materials.add(Color::srgb_u8(r, g, b)))
             .collect(),
-        dead: materials.add(theme::BOT_DEAD),
+        tombstone: assets.load("kaykit/halloween/gravestone.gltf#Scene0"),
     });
 }
 
@@ -223,29 +228,29 @@ pub fn replay(
     }
 }
 
-/// Keep exactly one sphere per bot in the replay.
+/// Keep exactly one sphere per live bot and one tombstone per knocked-out
+/// one. A bot that changes between the two is despawned and spawned anew.
 pub fn sync_bots(
     mut commands: Commands,
+    screen: Res<Screen>,
     replay: Res<Replay>,
     assets: Res<BotAssets>,
-    mut spheres: Query<(
-        Entity,
-        &Bot,
-        &mut Transform,
-        &mut MeshMaterial3d<StandardMaterial>,
-    )>,
+    mut bots: Query<(Entity, &Bot, &mut Transform)>,
 ) {
+    // Tombstones face the player's own camera.
+    let facing = match &*screen {
+        Screen::Room(snapshot) => outward(snapshot.me.edge),
+        _ => Vec3::Z,
+    };
     let mut present = Vec::new();
-    for (entity, bot, mut transform, mut material) in &mut spheres {
-        let Some(view) = replay.bots.iter().find(|view| view.id == bot.0) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
-        present.push(view.id);
-        *transform = bot_transform(view);
-        let wanted = bot_material(&assets, view);
-        if material.0 != wanted {
-            material.0 = wanted;
+    for (entity, bot, mut transform) in &mut bots {
+        let view = replay.bots.iter().find(|view| view.id == bot.id);
+        match view {
+            Some(view) if is_dead(view) == bot.dead => {
+                present.push(view.id);
+                *transform = bot_transform(view, facing);
+            }
+            _ => commands.entity(entity).despawn(),
         }
     }
 
@@ -254,32 +259,43 @@ pub fn sync_bots(
         .iter()
         .filter(|view| !present.contains(&view.id))
     {
-        commands.spawn((
-            Bot(view.id),
-            Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(bot_material(&assets, view)),
-            bot_transform(view),
-        ));
+        let bot = Bot {
+            id: view.id,
+            dead: is_dead(view),
+        };
+        let transform = bot_transform(view, facing);
+        if bot.dead {
+            commands.spawn((bot, WorldAssetRoot(assets.tombstone.clone()), transform));
+        } else {
+            let material = assets.alive[view.id as usize % assets.alive.len()].clone();
+            commands.spawn((
+                bot,
+                Mesh3d(assets.mesh.clone()),
+                MeshMaterial3d(material),
+                transform,
+            ));
+        }
     }
 }
 
-fn bot_transform(view: &BotView) -> Transform {
-    // Placeholder "animation": a punch puffs the sphere up, a knocked-out bot
-    // is squashed onto the floor.
-    let (scale, height) = match view.action {
-        BotAction::Attack => (Vec3::splat(1.3), 1.0),
-        BotAction::Miss => (Vec3::splat(1.12), 1.0),
-        BotAction::Dead => (Vec3::new(1.15, 0.3, 1.15), 0.3),
-        BotAction::Idle | BotAction::Walk => (Vec3::ONE, 1.0),
+fn is_dead(view: &BotView) -> bool {
+    view.action == BotAction::Dead
+}
+
+/// Gravestone model: 1.4 m wide, 1.6 m tall, front facing +Z.
+const TOMBSTONE_SCALE: f32 = 0.75;
+
+fn bot_transform(view: &BotView, facing: Vec3) -> Transform {
+    // Placeholder "animation": a punch puffs the sphere up.
+    let scale = match view.action {
+        BotAction::Dead => {
+            return Transform::from_translation(view.position.with_y(0.0))
+                .looking_to(-facing, Vec3::Y)
+                .with_scale(Vec3::splat(TOMBSTONE_SCALE));
+        }
+        BotAction::Attack => 1.3,
+        BotAction::Miss => 1.12,
+        BotAction::Idle | BotAction::Walk => 1.0,
     };
-    Transform::from_translation(view.position.with_y(view.radius * height))
-        .with_scale(scale * view.radius)
-}
-
-fn bot_material(assets: &BotAssets, view: &BotView) -> Handle<StandardMaterial> {
-    if view.action == BotAction::Dead {
-        assets.dead.clone()
-    } else {
-        assets.alive[view.id as usize % assets.alive.len()].clone()
-    }
+    Transform::from_translation(view.position).with_scale(Vec3::splat(scale * view.radius))
 }
