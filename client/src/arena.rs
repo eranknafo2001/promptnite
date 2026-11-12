@@ -147,7 +147,7 @@ fn setup(
 }
 
 /// Everybody watches the arena from behind the edge their own bot starts at.
-fn point_of_view(screen: Res<Screen>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
+pub fn point_of_view(screen: Res<Screen>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
     let Screen::Room(snapshot) = &*screen else {
         return;
     };

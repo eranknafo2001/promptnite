@@ -156,7 +156,8 @@ fn take_shots(
         shots.since = now;
     }
     let settle = match stage {
-        Stage::Fighting => 7.0,
+        // Bot 3 goes down at 10.25 s: catch its blast.
+        Stage::Fighting => 10.4,
         _ => 1.0,
     };
     let waited = now - shots.since;

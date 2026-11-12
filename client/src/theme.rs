@@ -117,3 +117,20 @@ pub fn style_editor(ctx: &egui::Context, open: &mut bool) {
         .default_width(360.0)
         .show(ctx, |ui| ctx.style_ui(ui, egui::Theme::Dark));
 }
+
+// Effects (`fx.rs`): a knocked-out bot blows up.
+
+/// Explosion puffs, hottest first: core, flame, outer flame, smoke.
+pub const FX_PUFF: [Color; 4] = [
+    Color::srgb(1.0, 0.98, 0.9),
+    Color::srgb(1.0, 0.85, 0.2),
+    Color::srgb(1.0, 0.45, 0.1),
+    Color::srgb(0.3, 0.3, 0.32),
+];
+/// The scorch mark left on the floor; alpha is how dark it gets.
+pub const FX_SCORCH: Color = Color::srgba(0.03, 0.03, 0.03, 0.55);
+/// Camera shake: largest offset in metres and roll in radians at full
+/// trauma, and how long full trauma takes to die down.
+pub const FX_SHAKE_OFFSET: f32 = 0.45;
+pub const FX_SHAKE_ROLL: f32 = 0.035;
+pub const FX_SHAKE_SECS: f32 = 0.4;
