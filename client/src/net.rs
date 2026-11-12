@@ -4,18 +4,16 @@
 //! SDK's local cache (`conn.db()`) every frame, which is plenty for a game
 //! with a handful of rows and makes reconnects a non-issue.
 //!
-//! A player picks a room every time the app starts ([`Session`]). Until then
-//! we only subscribe to our own player row; once the server has put us in a
-//! room we subscribe to that room's rows and nothing else.
+//! The module's tables are private. What we subscribe to are its views, which
+//! answer for whoever is asking: our own player row, and the rows of the room
+//! the server has put us in. They fill in by themselves once we join
+//! ([`Session`]), and a match's frames arrive when its fight starts.
 
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy_stdb::prelude::*;
-use promptnite_bindings::{
-    sdk::{Identity, Table},
-    *,
-};
+use promptnite_bindings::{sdk::Table, *};
 
 use crate::ui::{Action, Screen, Snapshot};
 
@@ -62,6 +60,10 @@ pub struct Session {
     /// Filled in by the `join` reducer's callback, which runs outside Bevy's
     /// systems; `send_join` moves it into `error`.
     refusal: Arc<Mutex<Option<String>>>,
+    /// Why the server would not take our last prompt (sent too soon after the
+    /// one before, the agents are busy, ...). Written by the `submit_prompt`
+    /// reducer's callback, read into every [`Snapshot`].
+    prompt_refusal: Arc<Mutex<Option<String>>>,
 }
 
 impl Session {
@@ -74,7 +76,13 @@ impl Session {
 
 /// Our own player row, if we ever played on this identity.
 fn me(conn: &Conn) -> Option<Player> {
-    conn.db().player().identity().find(&conn.try_identity()?)
+    let identity = conn.try_identity()?;
+    // After signing in as somebody else the cache may hold the old row for a
+    // moment.
+    conn.db()
+        .my_player()
+        .iter()
+        .find(|player| player.identity == identity)
 }
 
 /// Us and the room we are in, once the server has let us in.
@@ -82,7 +90,11 @@ fn my_room(conn: &Conn) -> Option<(Player, Room)> {
     // `online` is only set by joining, so a row left over from an earlier
     // launch doesn't count.
     let me = me(conn).filter(|me| me.online)?;
-    let room = conn.db().room().id().find(&me.room_id)?;
+    let room = conn
+        .db()
+        .my_room()
+        .iter()
+        .find(|room| room.id == me.room_id)?;
     Some((me, room))
 }
 
@@ -113,13 +125,7 @@ pub fn plugin(app: &mut App) {
     .add_systems(Startup, connect)
     .add_systems(
         Update,
-        (
-            on_connected,
-            perform,
-            send_join,
-            follow_room,
-            publish_screen,
-        )
+        (on_connected, perform, send_join, publish_screen)
             .chain()
             .before(crate::arena::replay),
     );
@@ -134,7 +140,7 @@ fn publish_screen(
 ) {
     *screen = match conn.as_deref().filter(|conn| conn.is_active()) {
         None => Screen::Connecting(server.uri.clone()),
-        Some(conn) => match snapshot(conn) {
+        Some(conn) => match snapshot(conn, &session) {
             Some(snapshot) => Screen::Room(Box::new(snapshot)),
             None if session.joined.is_some() => Screen::Entering,
             None => Screen::Join {
@@ -146,27 +152,28 @@ fn publish_screen(
 }
 
 /// `None` until the player is in a room.
-fn snapshot(conn: &Conn) -> Option<Snapshot> {
+fn snapshot(conn: &Conn, session: &Session) -> Option<Snapshot> {
     let db = conn.db();
     let (me, game) = my_room(conn)?;
     // The cache can briefly hold rows of a room we just left.
     let mut players: Vec<Player> = db
-        .player()
+        .room_players()
         .iter()
         .filter(|player| player.room_id == game.id)
         .collect();
     players.sort_by_key(|player| player.id);
     Some(Snapshot {
         submissions: db
-            .submission()
+            .room_submissions()
             .iter()
             .filter(|s| s.room_id == game.id && s.round == game.round)
             .collect(),
         faults: db
-            .match_fault()
+            .match_faults()
             .iter()
             .filter(|fault| fault.room_id == game.id)
             .collect(),
+        prompt_refusal: session.prompt_refusal.lock().unwrap().clone(),
         game,
         players,
         me,
@@ -185,7 +192,16 @@ fn perform(
                 session.join(name, room);
                 Ok(())
             }
-            (Action::SubmitPrompt(prompt), Some(conn)) => conn.reducers().submit_prompt(prompt),
+            (Action::SubmitPrompt(prompt), Some(conn)) => {
+                let refusal = session.prompt_refusal.clone();
+                conn.reducers()
+                    .submit_prompt_then(prompt, move |_, result| {
+                        *refusal.lock().unwrap() = match result {
+                            Ok(Err(error)) => Some(error),
+                            _ => None,
+                        };
+                    })
+            }
             (
                 Action::SetRoomSettings {
                     match_secs,
@@ -221,12 +237,13 @@ fn on_connected(
     // The server forgets that we are in the room when the connection drops.
     session.unsent = session.joined.is_some();
 
-    let identity: Identity = message.identity;
-    subs.subscribe_query(SubKey::Me, |q| {
-        q.from
-            .player()
-            .r#where(|player| player.identity.eq(identity))
-    });
+    // The views know who is asking, so there is nothing to filter by.
+    subs.subscribe_query(SubKey::Me, |q| q.from.my_player());
+    subs.subscribe_query(SubKey::Room, |q| q.from.my_room());
+    subs.subscribe_query(SubKey::Players, |q| q.from.room_players());
+    subs.subscribe_query(SubKey::Submissions, |q| q.from.room_submissions());
+    subs.subscribe_query(SubKey::Frames, |q| q.from.match_frames());
+    subs.subscribe_query(SubKey::Faults, |q| q.from.match_faults());
 }
 
 fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
@@ -256,33 +273,6 @@ fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
             Err(err) => warn!("could not join: {err}"),
         }
     }
-}
-
-/// Subscribe to the rows of whichever room we are in.
-fn follow_room(conn: Option<Res<Conn>>, mut subs: ResMut<Subs>, mut following: Local<u32>) {
-    // Not `my_room`: the room's row only arrives through these subscriptions.
-    let Some(me) = conn.as_deref().and_then(me).filter(|me| me.online) else {
-        return;
-    };
-    let id = me.room_id;
-    if *following == id {
-        return;
-    }
-    *following = id;
-    // Subscribing again under the same key replaces the previous room's query.
-    subs.subscribe_query(SubKey::Room, |q| q.from.room().r#where(|c| c.id.eq(id)));
-    subs.subscribe_query(SubKey::Players, |q| {
-        q.from.player().r#where(|c| c.room_id.eq(id))
-    });
-    subs.subscribe_query(SubKey::Submissions, |q| {
-        q.from.submission().r#where(|c| c.room_id.eq(id))
-    });
-    subs.subscribe_query(SubKey::Frames, |q| {
-        q.from.frame().r#where(|c| c.room_id.eq(id))
-    });
-    subs.subscribe_query(SubKey::Faults, |q| {
-        q.from.match_fault().r#where(|c| c.room_id.eq(id))
-    });
 }
 
 /// A setting from `?key=value` in the page URL (browser) or an environment

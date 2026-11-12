@@ -153,6 +153,9 @@ pub struct Snapshot {
     pub submissions: Vec<Submission>,
     pub faults: Vec<MatchFault>,
     pub me: Player,
+    /// Why the server would not take our last prompt at all (sent too soon
+    /// after the one before, the agents are busy, ...).
+    pub prompt_refusal: Option<String>,
 }
 
 impl Snapshot {
@@ -485,8 +488,14 @@ fn prompt_box(
             });
         });
 
-    // Why the last prompt didn't work out, right above the box.
-    if let Some(error) = error.filter(|error| !error.is_empty()) {
+    // Why the last prompt didn't work out, right above the box. A prompt the
+    // server would not take at all comes before one whose agent failed.
+    if let Some(error) = snapshot
+        .prompt_refusal
+        .as_deref()
+        .or(error)
+        .filter(|error| !error.is_empty())
+    {
         egui::Area::new(egui::Id::new("prompt_error"))
             .anchor(
                 egui::Align2::LEFT_BOTTOM,

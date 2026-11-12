@@ -276,12 +276,9 @@ fn decide(
 
     let bot = &mut bots[i];
     let lua = bot.lua.as_mut().expect("checked above");
-    let mut result = lua.tick(&view);
-    if lua.memory() > rules::MAX_LUA_MEMORY_BYTES {
-        result = Err(format!(
-            "script used more than {} bytes of memory and was disabled",
-            rules::MAX_LUA_MEMORY_BYTES
-        ));
+    let result = lua.tick(&view);
+    if lua.out_of_memory() {
+        // Not a lost turn: the script is switched off for the rest of the match.
         bot.lua = None;
     }
 
