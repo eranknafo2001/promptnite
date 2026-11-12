@@ -205,6 +205,9 @@ fn draw(
         ctx.all_styles_mut(|style| style.spacing.scroll.fade.strength = 0.0);
         *fonts_set = true;
     }
+    if !theme::fonts_ready(ctx) {
+        return Ok(());
+    }
     let screen_rect = ctx.viewport_rect();
     let background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
@@ -299,14 +302,16 @@ fn join_screen(
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
-                ui.set_width(320.0);
+                ui.set_width(380.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new("Who's playing, and where?")
-                            .size(theme::SIZE_TITLE)
+                            .font(theme::bold(theme::SIZE_TITLE))
                             .color(theme::INK),
                     );
-                    ui.add_space(12.0);
+                    ui.add_space(4.0);
+                    ui.label(small("Players with the same room id play together."));
+                    ui.add_space(14.0);
 
                     let name = text_field(ui, &mut form.name, "Your name", MAX_NAME_CHARS);
                     ui.add_space(4.0);
@@ -316,23 +321,16 @@ fn join_screen(
                         name.request_focus();
                     }
 
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Everyone who enters the same room id plays together.\n\
-                         Press Enter to play",
-                        )
-                        .size(theme::SIZE_LABEL)
-                        .color(theme::INK_MUTED),
-                    );
+                    ui.add_space(10.0);
+                    ui.label(small("Press Enter to play"));
                     // Why the server turned the last attempt away (room full).
                     if let Some(error) = error {
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(error)
-                                .size(theme::SIZE_LABEL)
-                                .color(theme::BAD),
-                        );
+                        ui.add_space(12.0);
+                        theme::error_panel(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(theme::error_heading("Can't join"));
+                            ui.label(theme::error_body(error));
+                        });
                     }
 
                     // A single-line box gives up the focus on Enter. Whichever box
@@ -440,7 +438,7 @@ fn prompt_box(
                             "Ctrl + Enter to send"
                         }));
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(small(&format!("Round {}", snapshot.game.round)));
+                            ui.label(small(format!("Round {}", snapshot.game.round)));
                         });
                     },
                 );
@@ -462,12 +460,9 @@ fn prompt_box(
             .interactable(false)
             .show(ctx, |ui| {
                 ui.set_max_width(screen.width() - 2.0 * EDGE);
-                pill(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(error)
-                            .size(theme::SIZE_LABEL)
-                            .color(theme::BAD),
-                    );
+                theme::error_panel(ui, |ui| {
+                    ui.label(theme::error_heading("Your agent couldn't build a bot"));
+                    ui.label(theme::error_body(error));
                 });
             });
     }
@@ -480,11 +475,8 @@ fn room_settings(ctx: &egui::Context, game: &Room, actions: &mut MessageWriter<A
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Room settings")
-                        .size(theme::SIZE_LABEL)
-                        .color(theme::INK),
-                );
+                ui.label(theme::heading("Room settings"));
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(small("Match length"));
                     for secs in MATCH_LENGTHS {
@@ -522,11 +514,7 @@ fn status_line(ctx: &egui::Context, busy: bool, text: &str) {
                     if busy {
                         ui.add(egui::Spinner::new().size(14.0));
                     }
-                    ui.label(
-                        egui::RichText::new(text)
-                            .size(theme::SIZE_STATUS)
-                            .color(theme::INK),
-                    );
+                    ui.label(theme::body(text));
                 });
             });
         });
@@ -542,6 +530,8 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     const GAP: f32 = 6.0;
     const COLUMN_GAP: f32 = 14.0;
     const ROW_GAP: f32 = 6.0;
+    /// Extra room under the heading row.
+    const HEADER_GAP: f32 = 6.0;
     const PADDING: egui::Vec2 = egui::vec2(16.0, 12.0);
 
     let game = &snapshot.game;
@@ -549,7 +539,7 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     let left = |text: String| {
         painter.layout_no_wrap(
             text,
-            egui::FontId::proportional(theme::SIZE_LABEL),
+            egui::FontId::proportional(theme::SIZE_BODY),
             theme::INK,
         )
     };
@@ -561,7 +551,11 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     // without a colour has no dot and starts at the left edge.
     let mut rows = vec![(
         None,
-        left(format!("Room {}", game.code)),
+        painter.layout_no_wrap(
+            format!("Room {}", game.code),
+            theme::bold(theme::SIZE_HEADING),
+            theme::INK,
+        ),
         right(format!("{} s matches", game.match_secs), muted),
     )];
     for player in snapshot.players.iter().filter(|player| player.online) {
@@ -610,7 +604,7 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     let row_height = widest(|row| row.1.size().y.max(row.2.size().y));
     let size = egui::vec2(
         DOT + GAP + name_width + COLUMN_GAP + state_width,
-        rows.len() as f32 * (row_height + ROW_GAP) - ROW_GAP,
+        rows.len() as f32 * (row_height + ROW_GAP) - ROW_GAP + HEADER_GAP,
     ) + PADDING * 2.0;
     let outer = egui::Rect::from_min_size(
         egui::pos2(screen.right() - EDGE - size.x, screen.top() + EDGE),
@@ -638,6 +632,9 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         painter.galley(name_at, name, theme::INK);
         painter.galley(state_at, state, theme::INK);
         y += row_height + ROW_GAP;
+        if color.is_none() {
+            y += HEADER_GAP;
+        }
     }
 }
 
@@ -730,19 +727,19 @@ fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay, clock: Opti
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, top))
         .interactable(false)
         .show(ctx, |ui| {
-            ui.set_max_width(320.0);
-            pill(ui, |ui| {
-                for fault in faults {
+            ui.set_max_width(360.0);
+            theme::error_panel(ui, |ui| {
+                for (i, fault) in faults.into_iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(8.0);
+                    }
                     let whose = if fault.player_id == snapshot.me.id {
                         "Your bot".to_string()
                     } else {
                         snapshot.name_of(fault.player_id)
                     };
-                    ui.label(
-                        egui::RichText::new(format!("{whose} broke down: {}", fault.message))
-                            .size(theme::SIZE_SMALL)
-                            .color(theme::BAD),
-                    );
+                    ui.label(theme::error_heading(format!("{whose} broke down")));
+                    ui.label(theme::error_body(&fault.message));
                 }
             });
         });
@@ -755,7 +752,7 @@ fn shadowed_text(
     size: f32,
     color: egui::Color32,
 ) {
-    let font = egui::FontId::proportional(size);
+    let font = theme::bold(size);
     let drop = egui::vec2(size / 32.0, size / 21.0).max(egui::Vec2::splat(1.0));
     painter.text(
         at + drop,
@@ -811,54 +808,78 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
     }
 }
 
-/// One card per bot in the match down the left side, vertically centred:
-/// colour dot and name, health bar underneath.
+/// One panel down the left side, vertically centred, with a row per bot in
+/// the match: colour dot, name and health, the health bar underneath.
 ///
-/// Painted directly, like the roster, so the cards don't jump a frame when
+/// Painted directly, like the roster, so the panel doesn't jump a frame when
 /// a name changes length.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
-    const WIDTH: f32 = 196.0;
-    const HEIGHT: f32 = 54.0;
-    const GAP: f32 = 10.0;
+    const WIDTH: f32 = 220.0;
+    const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
+    const HEADING: f32 = 30.0;
+    const ROW: f32 = 40.0;
+    /// The last row ends at its bar, not at the next row.
+    const LAST_ROW: f32 = 28.0;
     const DOT: f32 = 10.0;
-    const PADDING: egui::Vec2 = egui::vec2(14.0, 12.0);
+    const BAR: f32 = 6.0;
 
-    let count = replay.bots.len() as f32;
-    let mut top = screen.center().y - (count * (HEIGHT + GAP) - GAP) / 2.0;
-    for bot in &replay.bots {
-        let card = egui::Rect::from_min_size(
-            egui::pos2(screen.left() + EDGE, top),
-            egui::vec2(WIDTH, HEIGHT),
-        );
-        top += HEIGHT + GAP;
-        theme::panel(painter, card);
+    if replay.bots.is_empty() {
+        return;
+    }
+    let height = PADDING.y * 2.0 + HEADING + ROW * (replay.bots.len() - 1) as f32 + LAST_ROW;
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(screen.left() + EDGE, screen.center().y - height / 2.0),
+        egui::vec2(WIDTH, height),
+    );
+    theme::panel(painter, outer);
+    let inner = outer.shrink2(PADDING);
+    painter.text(
+        inner.left_top(),
+        egui::Align2::LEFT_TOP,
+        "Bots",
+        theme::bold(theme::SIZE_HEADING),
+        theme::INK,
+    );
 
-        let inner = card.shrink2(PADDING);
+    let max_hp = snapshot.game.max_hp.max(1);
+    for (i, bot) in replay.bots.iter().enumerate() {
+        let top = inner.top() + HEADING + i as f32 * ROW;
         let alive = bot.action != BotAction::Dead;
-        let name_y = inner.top() + 7.0;
+        let ink = if alive { theme::INK } else { theme::INK_MUTED };
+        let name_y = top + 10.0;
         painter.circle_filled(
             egui::pos2(inner.left() + DOT / 2.0, name_y),
             DOT / 2.0,
             fill_of(bot),
         );
         painter.text(
-            egui::pos2(inner.left() + DOT + 6.0, name_y),
+            egui::pos2(inner.left() + DOT + 8.0, name_y),
             egui::Align2::LEFT_CENTER,
             snapshot.name_of(bot.id),
-            egui::FontId::proportional(theme::SIZE_BOT_NAME),
-            if alive { theme::INK } else { theme::INK_MUTED },
+            egui::FontId::proportional(theme::SIZE_BODY),
+            ink,
+        );
+        painter.text(
+            egui::pos2(inner.right(), name_y),
+            egui::Align2::RIGHT_CENTER,
+            if alive {
+                bot.hp.max(0).to_string()
+            } else {
+                "out".into()
+            },
+            egui::FontId::proportional(theme::SIZE_SMALL),
+            theme::INK_MUTED,
         );
 
-        let bar = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), inner.bottom() - 6.0),
-            inner.right_bottom(),
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), top + 22.0),
+            egui::vec2(inner.width(), BAR),
         );
-        painter.rect_filled(bar, 3.0, theme::HP_TRACK);
-        let health = (bot.hp as f32 / snapshot.game.max_hp.max(1) as f32).clamp(0.0, 1.0);
+        painter.rect_filled(bar, BAR / 2.0, theme::HP_TRACK);
+        let health = (bot.hp as f32 / max_hp as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            let filled =
-                egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height()));
-            painter.rect_filled(filled, 3.0, fill_of(bot));
+            let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
+            painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
         }
     }
 }

@@ -361,6 +361,9 @@ fn controls(
     mut time: ResMut<Time<Virtual>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    if !theme::fonts_ready(ctx) {
+        return Ok(());
+    }
     let now = time.elapsed_secs_f64();
 
     if !ctx.egui_wants_keyboard_input() {
@@ -424,8 +427,8 @@ fn controls(
                             "SANDBOX  {number}/{}  {name}  ({role}){paused}",
                             STAGES.len()
                         ))
-                        .size(theme::SIZE_LABEL)
-                        .color(theme::TEXT),
+                        .font(theme::bold(theme::SIZE_SMALL))
+                        .color(theme::INK),
                     );
                     for line in [
                         "← →  or  1-9   screens",

@@ -90,6 +90,9 @@ pub const TEXT_DEAD: Color32 = Color32::GRAY;
 /// Dark enough to read on a white panel.
 pub const GOOD: Color32 = Color32::from_rgb(0x1f, 0x8a, 0x3d);
 pub const BAD: Color32 = Color32::from_rgb(0xcf, 0x3a, 0x2a);
+/// Error panels: a soft brick red, so it reads as a problem without shouting.
+pub const ERROR_FILL: Color32 = Color32::from_rgb(0xd2, 0x5c, 0x4d);
+pub const ERROR_TEXT: Color32 = Color32::WHITE;
 
 /// Panels (text boxes, pills, cards): white, with a bold warm-black outline
 /// and well rounded corners.
@@ -117,30 +120,78 @@ pub const EDGE: f32 = 12.0;
 // Type sizes, largest first.
 
 pub const SIZE_BANNER: f32 = 64.0;
-pub const SIZE_TITLE: f32 = 24.0;
+/// The join screen's question.
+pub const SIZE_TITLE: f32 = 26.0;
 /// The match timer, in monospace.
 pub const SIZE_TIMER: f32 = 20.0;
-pub const SIZE_FIELD: f32 = 18.0;
-pub const SIZE_BODY: f32 = 16.0;
-pub const SIZE_STATUS: f32 = 14.0;
-pub const SIZE_BOT_NAME: f32 = 14.0;
-pub const SIZE_LABEL: f32 = 13.0;
+/// What the player types.
+pub const SIZE_FIELD: f32 = 17.0;
+/// The first line of a panel or an error.
+pub const SIZE_HEADING: f32 = 15.0;
+/// Names, messages, the status line.
+pub const SIZE_BODY: f32 = 14.0;
+/// States, hints, footers.
 pub const SIZE_SMALL: f32 = 12.5;
 
-/// Lexend Bold for all proportional text, egui's own fonts behind it for any
-/// glyph Lexend lacks. Compiled in, so the browser needs no extra download.
+/// Lexend for all proportional text: Regular by default, Bold as the
+/// `bold` family for titles and headings (see [`bold`]). egui's own fonts
+/// sit behind it for any glyph Lexend lacks. Compiled in, so the browser
+/// needs no extra download.
 pub fn set_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "lexend_bold".into(),
-        egui::FontData::from_static(include_bytes!("../fonts/Lexend-Bold.ttf")).into(),
-    );
+    for (name, bytes) in [
+        ("lexend", &include_bytes!("../fonts/Lexend-Regular.ttf")[..]),
+        (
+            "lexend_bold",
+            &include_bytes!("../fonts/Lexend-Bold.ttf")[..],
+        ),
+    ] {
+        fonts
+            .font_data
+            .insert(name.into(), egui::FontData::from_static(bytes).into());
+    }
+    let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(0, "lexend_bold".into());
+        .insert(0, "lexend".into());
+    let mut bold = vec!["lexend_bold".to_string()];
+    bold.extend(fallback);
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(BOLD.into()), bold);
     ctx.set_fonts(fonts);
+}
+
+const BOLD: &str = "bold";
+
+/// egui takes new fonts from the next frame on, and panics on a family it
+/// doesn't know yet: nothing using [`bold`] may draw before this is true.
+pub fn fonts_ready(ctx: &egui::Context) -> bool {
+    ctx.fonts(|fonts| {
+        fonts
+            .definitions()
+            .families
+            .contains_key(&egui::FontFamily::Name(BOLD.into()))
+    })
+}
+
+/// Lexend Bold at `size`.
+pub fn bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(BOLD.into()))
+}
+
+/// The first line of a panel.
+pub fn heading(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(bold(SIZE_HEADING))
+        .color(INK)
+}
+
+/// Ordinary text on a panel.
+pub fn body(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into()).size(SIZE_BODY).color(INK)
 }
 
 pub fn box_frame() -> egui::Frame {
@@ -177,6 +228,33 @@ pub fn field_frame() -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(12, 8))
 }
 
+/// A panel for something that went wrong: soft red, white text. Fill it
+/// with [`error_heading`] and [`error_body`].
+pub fn error_panel(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(ERROR_FILL)
+        .stroke(panel_stroke())
+        .shadow(PANEL_SHADOW)
+        .corner_radius(PILL_RADIUS)
+        .inner_margin(egui::Margin::symmetric(16, 10))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            content(ui);
+        });
+}
+
+pub fn error_heading(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(bold(SIZE_HEADING))
+        .color(ERROR_TEXT)
+}
+
+pub fn error_body(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .size(SIZE_SMALL)
+        .color(ERROR_TEXT)
+}
+
 /// A small panel around a line of text.
 pub fn pill(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
@@ -188,8 +266,10 @@ pub fn pill(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         .show(ui, content);
 }
 
-pub fn small(text: &str) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_SMALL).color(INK_MUTED)
+pub fn small(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .size(SIZE_SMALL)
+        .color(INK_MUTED)
 }
 
 /// egui's own style editor (widget colours, spacing, rounding), live. What
