@@ -6,12 +6,14 @@
 //!
 //!   net.rs    connection to SpacetimeDB, subscriptions, identity token
 //!   arena.rs  3D scene and match replay
+//!   fx.rs     explosions, debris and camera shake
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
 //!   theme.rs  colours, type sizes and boxes: the look in one place
 //!   sandbox.rs  every screen with made-up data and no server (`--sandbox`)
 //!   logs.rs   sends warnings, errors and panics to the central log
 
 mod arena;
+mod fx;
 mod logs;
 mod net;
 mod sandbox;
@@ -47,7 +49,7 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins((arena::plugin, ui::plugin, logs::plugin));
+        .add_plugins((arena::plugin, fx::plugin, ui::plugin, logs::plugin));
     if sandbox {
         app.add_plugins(sandbox::plugin);
     } else {

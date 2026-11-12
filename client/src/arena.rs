@@ -36,31 +36,78 @@ pub struct BotView {
 #[derive(Component)]
 pub struct ArenaCamera;
 
-/// Tilted view from behind edge `edge` of the arena, looking across it.
+/// A camera pose relative to the player's edge: where the eye is and the
+/// point it looks at, each as (outward, up, to the right) from the centre.
+struct View {
+    eye: Vec3,
+    focus: Vec3,
+}
+
+/// Watching the fight: tilted, from behind the player's own edge.
+const FIGHT_VIEW: View = View {
+    eye: Vec3::new(19.0, 21.0, 0.0),
+    focus: Vec3::new(1.0, 0.0, 0.0),
+};
+
+/// Writing a prompt: lifted high and steeper, though not straight down,
+/// for a planning-the-attack feel. Eye and focus both slide to the right
+/// (a pan, not a turn) so the arena sits square, left of the prompt column
+/// on the right of the screen.
+const STRATEGY_VIEW: View = View {
+    eye: Vec3::new(11.0, 38.0, 4.5),
+    focus: Vec3::new(0.0, 0.0, 4.5),
+};
+
+/// `view` from behind edge `edge`, as world (eye, focus).
 /// The edge table must match `edge_direction` in `sim/src/rules.rs`.
+fn place(view: &View, edge: u32) -> (Vec3, Vec3) {
+    let outward = outward(edge);
+    let right = Vec3::Y.cross(outward);
+    let world = |v: Vec3| outward * v.x + Vec3::Y * v.y + right * v.z;
+    (world(view.eye), world(view.focus))
+}
+
 fn camera_transform(edge: u32) -> Transform {
+    let (eye, focus) = place(&FIGHT_VIEW, edge);
+    Transform::from_translation(eye).looking_at(focus, Vec3::Y)
+}
+
+/// Where the camera's eye and focus are and how fast they move: both
+/// follow a spring to the view the game wants.
+#[derive(Resource, Default)]
+pub struct CameraSpring {
+    at: Option<(Vec3, Vec3)>,
+    velocity: (Vec3, Vec3),
+}
+
+/// Out from the centre towards edge `edge`.
+fn outward(edge: u32) -> Vec3 {
     // Sim (x, y) is the ground plane; Bevy's up axis is Y.
-    let outward = match edge % 4 {
+    match edge % 4 {
         0 => Vec3::Z,
         1 => Vec3::NEG_Z,
         2 => Vec3::X,
         _ => Vec3::NEG_X,
-    };
-    Transform::from_translation(outward * 19.0 + Vec3::Y * 21.0).looking_at(outward, Vec3::Y)
+    }
 }
 
+/// A bot's sphere, or the tombstone of a knocked-out one.
 #[derive(Component)]
-pub struct Bot(u32);
+pub struct Bot {
+    id: u32,
+    dead: bool,
+}
 
 #[derive(Resource)]
 pub struct BotAssets {
     mesh: Handle<Mesh>,
     alive: Vec<Handle<StandardMaterial>>,
-    dead: Handle<StandardMaterial>,
+    tombstone: Handle<WorldAsset>,
 }
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Replay>()
+        .init_resource::<CameraSpring>()
         .add_systems(Startup, setup)
         .add_systems(Update, (point_of_view, (replay, sync_bots).chain()));
 }
@@ -112,6 +159,191 @@ fn spawn_rooftop(commands: &mut Commands, assets: &AssetServer) {
     }
 }
 
+/// The building under the roof: grey walls going down well past the bottom
+/// of the screen, with a ledge at every floor, so the arena doesn't float.
+fn spawn_building(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    const FLOORS: i32 = 16;
+    const FLOOR_HEIGHT: f32 = 3.5;
+    // Under the roof blocks, which are 4 m deep.
+    const TOP: f32 = -4.0;
+    let side = ARENA_HALF_SIZE * 2.0;
+    let height = FLOORS as f32 * FLOOR_HEIGHT;
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(side, height, side))),
+        MeshMaterial3d(materials.add(theme::BUILDING)),
+        Transform::from_xyz(0.0, TOP - height / 2.0, 0.0),
+    ));
+    let ledge = meshes.add(Cuboid::new(side + 0.4, 0.3, side + 0.4));
+    let ledge_material = materials.add(theme::BUILDING_LEDGE);
+    for floor in 0..FLOORS {
+        commands.spawn((
+            Mesh3d(ledge.clone()),
+            MeshMaterial3d(ledge_material.clone()),
+            Transform::from_xyz(0.0, TOP - floor as f32 * FLOOR_HEIGHT, 0.0),
+        ));
+    }
+}
+
+/// The sky: a backdrop hung far behind everything else, attached to the
+/// camera so it always fills the view, fading from light blue at the bottom
+/// of the screen to deep blue at the top.
+fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> impl Bundle {
+    // At 500 m a 45° view is about 415 m tall. Just a little taller, so the
+    // ends of the fade land at the screen edges with room for the sway, and
+    // wide enough for any window shape.
+    const DISTANCE: f32 = 500.0;
+    let (bottom, top) = (
+        theme::BACKGROUND.to_linear().to_f32_array(),
+        theme::SKY_TOP.to_linear().to_f32_array(),
+    );
+    // Rectangle vertices: top right, top left, bottom left, bottom right.
+    let mesh = Mesh::from(Rectangle::new(4000.0, 440.0))
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![top, top, bottom, bottom]);
+    (
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, -DISTANCE),
+    )
+}
+
+/// Street level, where our building and every other one stands.
+const GROUND: f32 = -60.0;
+
+/// Two rooftop parks on the blocks at opposite corners of ours, so one is in
+/// view from every edge. (Down on the street the buildings hide a park.)
+fn is_park(x: i32, z: i32) -> bool {
+    matches!((x, z), (-2, -2) | (2, 2))
+}
+
+/// The city around us: the ground, a grid of other buildings with streets
+/// between them, their roofs lower than ours so they never get in the way,
+/// some with AC units or a water tank on top, and a couple of parks.
+/// Seeded, so it is the same every time.
+fn spawn_neighbours(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    use crate::fx::rand;
+    // A block per cell; cells next to ours stay empty as the street.
+    const CELL: f32 = 12.0;
+    // Far enough that the ground at the top of the screen is city too.
+    const REACH: i32 = 8;
+    let cube = meshes.add(Cuboid::from_length(1.0));
+    let tank = meshes.add(Cylinder::new(0.5, 1.0));
+    let ball = meshes.add(Sphere::new(0.5));
+    let grass = materials.add(theme::PARK_GRASS);
+    let leaves = materials.add(theme::TREE_LEAVES);
+    let trunk = materials.add(theme::TREE_TRUNK);
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
+        MeshMaterial3d(materials.add(theme::STREET)),
+        Transform::from_xyz(0.0, GROUND, 0.0),
+    ));
+    let walls: Vec<_> = theme::NEIGHBOURS
+        .iter()
+        .map(|&color| materials.add(color))
+        .collect();
+    let clutter = materials.add(theme::BUILDING_LEDGE);
+    let mut part =
+        |mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, at: Vec3, size: Vec3| {
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(at).with_scale(size),
+            ));
+        };
+
+    for x in -REACH..=REACH {
+        for z in -REACH..=REACH {
+            if x.abs() <= 1 && z.abs() <= 1 {
+                continue;
+            }
+            let seed = ((x + 50) * 131 + (z + 50)) as u32 * 7;
+            if is_park(x, z) {
+                const ROOF: f32 = -14.0;
+                let side = CELL - 1.0;
+                let centre = Vec3::new(x as f32 * CELL, ROOF, z as f32 * CELL);
+                let height = ROOF - GROUND;
+                part(
+                    &cube,
+                    &walls[0],
+                    centre - Vec3::Y * height / 2.0,
+                    Vec3::new(side, height, side),
+                );
+                part(&cube, &grass, centre, Vec3::new(side, 0.4, side));
+                for k in 0..7 {
+                    let s = seed + 30 + k * 3;
+                    let at = centre
+                        + Vec3::new(
+                            (rand(s) - 0.5) * (side - 4.0),
+                            0.0,
+                            (rand(s + 1) - 0.5) * (side - 4.0),
+                        );
+                    let crown = 2.2 + 1.3 * rand(s + 2);
+                    part(&tank, &trunk, at + Vec3::Y, Vec3::new(0.4, 2.0, 0.4));
+                    part(
+                        &ball,
+                        &leaves,
+                        at + Vec3::Y * (1.6 + crown / 2.0),
+                        Vec3::splat(crown),
+                    );
+                }
+                continue;
+            }
+            // Every so often a gap: a plaza or a wider street.
+            if rand(seed) < 0.3 {
+                continue;
+            }
+            let width = CELL * (0.55 + 0.3 * rand(seed + 1));
+            let depth = CELL * (0.55 + 0.3 * rand(seed + 2));
+            let roof = -14.0 - 30.0 * rand(seed + 3);
+            let centre = Vec3::new(
+                x as f32 * CELL + (rand(seed + 4) - 0.5) * 2.0,
+                roof,
+                z as f32 * CELL + (rand(seed + 5) - 0.5) * 2.0,
+            );
+            let wall = &walls[(rand(seed + 6) * walls.len() as f32) as usize % walls.len()];
+            let height = roof - GROUND;
+            part(
+                &cube,
+                wall,
+                centre - Vec3::Y * height / 2.0,
+                Vec3::new(width, height, depth),
+            );
+            // Roof clutter, kept away from the edges.
+            let spot = |k: u32| {
+                centre
+                    + Vec3::new(
+                        (rand(seed + k) - 0.5) * (width - 3.0),
+                        0.0,
+                        (rand(seed + k + 1) - 0.5) * (depth - 3.0),
+                    )
+            };
+            for k in 0..(rand(seed + 7) * 3.0) as u32 {
+                let size = Vec3::new(1.2, 0.8, 1.6);
+                part(
+                    &cube,
+                    &clutter,
+                    spot(10 + k * 2) + Vec3::Y * size.y / 2.0,
+                    size,
+                );
+            }
+            if rand(seed + 8) < 0.35 {
+                let size = Vec3::new(2.2, 2.4, 2.2);
+                part(&tank, &clutter, spot(20) + Vec3::Y * size.y / 2.0, size);
+            }
+        }
+    }
+}
+
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -119,18 +351,34 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     spawn_rooftop(&mut commands, &assets);
+    spawn_building(&mut commands, &mut meshes, &mut materials);
+    spawn_neighbours(&mut commands, &mut meshes, &mut materials);
 
+    // A sunny afternoon: a warm sun low enough for long, crisp shadows, and blue sky light
+    // filling them in.
     commands.spawn((
         DirectionalLight {
-            illuminance: light_consts::lux::OVERCAST_DAY,
+            color: theme::SUN,
+            illuminance: theme::SUN_LUX,
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(6.0, 14.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(-8.0, 11.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    commands.insert_resource(GlobalAmbientLight {
+        color: theme::SKY_LIGHT,
+        brightness: theme::SKY_LIGHT_BRIGHTNESS,
+        ..default()
+    });
 
     // Moved behind the player's own edge once they are in a room.
-    commands.spawn((ArenaCamera, Camera3d::default(), camera_transform(0)));
+    commands.spawn((
+        ArenaCamera,
+        Camera3d::default(),
+        camera_transform(0),
+        theme::color_grading(),
+        children![sky(&mut meshes, &mut materials)],
+    ));
 
     commands.insert_resource(BotAssets {
         mesh: meshes.add(Sphere::new(1.0)),
@@ -138,19 +386,50 @@ fn setup(
             .iter()
             .map(|&[r, g, b]| materials.add(Color::srgb_u8(r, g, b)))
             .collect(),
-        dead: materials.add(theme::BOT_DEAD),
+        tombstone: assets.load("kaykit/halloween/gravestone.gltf#Scene0"),
     });
 }
 
-/// Everybody watches the arena from behind the edge their own bot starts at.
-fn point_of_view(screen: Res<Screen>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
+/// Everybody watches the arena from behind the edge their own bot starts at:
+/// lifted into the strategy view while writing a prompt, the fight view the
+/// rest of the time. The camera springs between the two, a quick
+/// snap that overshoots a touch and settles.
+pub fn point_of_view(
+    time: Res<Time>,
+    screen: Res<Screen>,
+    mut spring: ResMut<CameraSpring>,
+    mut camera: Single<&mut Transform, With<ArenaCamera>>,
+) {
+    // Stiffness, and damping just under critical for the overshoot.
+    const STIFFNESS: f32 = 70.0;
+    const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
+
     let Screen::Room(snapshot) = &*screen else {
         return;
     };
-    let wanted = camera_transform(snapshot.me.edge);
-    if **camera != wanted {
-        **camera = wanted;
+    // Only while the prompt box is open, as in `ui::draw`: nothing sent
+    // yet this round, or the last try failed.
+    let writing = snapshot.game.phase == Phase::Prompting
+        && matches!(
+            snapshot.submission_of(snapshot.me.id).map(|s| s.status),
+            None | Some(SubmissionStatus::Failed)
+        );
+    let view = if writing { &STRATEGY_VIEW } else { &FIGHT_VIEW };
+    let (eye, focus) = place(view, snapshot.me.edge);
+    let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
+    // A long frame (a hitch, a hidden tab) must not fling the camera.
+    let dt = time.delta_secs().min(1.0 / 30.0);
+    let (mut v_eye, mut v_focus) = spring.velocity;
+    for (pos, vel, goal) in [
+        (&mut at, &mut v_eye, eye),
+        (&mut focus_at, &mut v_focus, focus),
+    ] {
+        *vel += (STIFFNESS * (goal - *pos) - DAMPING * *vel) * dt;
+        *pos += *vel * dt;
     }
+    spring.at = Some((at, focus_at));
+    spring.velocity = (v_eye, v_focus);
+    **camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
 }
 
 /// Decide which tick to show and blend the frames around it. Without a
@@ -232,29 +511,29 @@ pub fn replay(
     }
 }
 
-/// Keep exactly one sphere per bot in the replay.
+/// Keep exactly one sphere per live bot and one tombstone per knocked-out
+/// one. A bot that changes between the two is despawned and spawned anew.
 pub fn sync_bots(
     mut commands: Commands,
+    screen: Res<Screen>,
     replay: Res<Replay>,
     assets: Res<BotAssets>,
-    mut spheres: Query<(
-        Entity,
-        &Bot,
-        &mut Transform,
-        &mut MeshMaterial3d<StandardMaterial>,
-    )>,
+    mut bots: Query<(Entity, &Bot, &mut Transform)>,
 ) {
+    // Tombstones face the player's own camera.
+    let facing = match &*screen {
+        Screen::Room(snapshot) => outward(snapshot.me.edge),
+        _ => Vec3::Z,
+    };
     let mut present = Vec::new();
-    for (entity, bot, mut transform, mut material) in &mut spheres {
-        let Some(view) = replay.bots.iter().find(|view| view.id == bot.0) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
-        present.push(view.id);
-        *transform = bot_transform(view);
-        let wanted = bot_material(&assets, view);
-        if material.0 != wanted {
-            material.0 = wanted;
+    for (entity, bot, mut transform) in &mut bots {
+        let view = replay.bots.iter().find(|view| view.id == bot.id);
+        match view {
+            Some(view) if is_dead(view) == bot.dead => {
+                present.push(view.id);
+                *transform = bot_transform(view, facing);
+            }
+            _ => commands.entity(entity).despawn(),
         }
     }
 
@@ -263,32 +542,43 @@ pub fn sync_bots(
         .iter()
         .filter(|view| !present.contains(&view.id))
     {
-        commands.spawn((
-            Bot(view.id),
-            Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(bot_material(&assets, view)),
-            bot_transform(view),
-        ));
+        let bot = Bot {
+            id: view.id,
+            dead: is_dead(view),
+        };
+        let transform = bot_transform(view, facing);
+        if bot.dead {
+            commands.spawn((bot, WorldAssetRoot(assets.tombstone.clone()), transform));
+        } else {
+            let material = assets.alive[view.id as usize % assets.alive.len()].clone();
+            commands.spawn((
+                bot,
+                Mesh3d(assets.mesh.clone()),
+                MeshMaterial3d(material),
+                transform,
+            ));
+        }
     }
 }
 
-fn bot_transform(view: &BotView) -> Transform {
-    // Placeholder "animation": a punch puffs the sphere up, a knocked-out bot
-    // is squashed onto the floor.
-    let (scale, height) = match view.action {
-        BotAction::Attack => (Vec3::splat(1.3), 1.0),
-        BotAction::Miss => (Vec3::splat(1.12), 1.0),
-        BotAction::Dead => (Vec3::new(1.15, 0.3, 1.15), 0.3),
-        BotAction::Idle | BotAction::Walk => (Vec3::ONE, 1.0),
+fn is_dead(view: &BotView) -> bool {
+    view.action == BotAction::Dead
+}
+
+/// Gravestone model: 1.4 m wide, 1.6 m tall, front facing +Z.
+const TOMBSTONE_SCALE: f32 = 0.75;
+
+fn bot_transform(view: &BotView, facing: Vec3) -> Transform {
+    // Placeholder "animation": a punch puffs the sphere up.
+    let scale = match view.action {
+        BotAction::Dead => {
+            return Transform::from_translation(view.position.with_y(0.0))
+                .looking_to(-facing, Vec3::Y)
+                .with_scale(Vec3::splat(TOMBSTONE_SCALE));
+        }
+        BotAction::Attack => 1.3,
+        BotAction::Miss => 1.12,
+        BotAction::Idle | BotAction::Walk => 1.0,
     };
-    Transform::from_translation(view.position.with_y(view.radius * height))
-        .with_scale(scale * view.radius)
-}
-
-fn bot_material(assets: &BotAssets, view: &BotView) -> Handle<StandardMaterial> {
-    if view.action == BotAction::Dead {
-        assets.dead.clone()
-    } else {
-        assets.alive[view.id as usize % assets.alive.len()].clone()
-    }
+    Transform::from_translation(view.position).with_scale(Vec3::splat(scale * view.radius))
 }
