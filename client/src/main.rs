@@ -6,7 +6,7 @@
 //!
 //!   net.rs    connection to SpacetimeDB, subscriptions, identity token
 //!   arena.rs  3D scene and match replay
-//!   fx.rs     explosions, debris, camera shake and scorch marks
+//!   fx.rs     explosions, debris and camera shake
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
 //!   theme.rs  colours, type sizes and boxes: the look in one place
 //!   sandbox.rs  every screen with made-up data and no server (`--sandbox`)

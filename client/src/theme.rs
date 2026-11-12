@@ -127,8 +127,6 @@ pub const FX_PUFF: [Color; 4] = [
     Color::srgb(1.0, 0.45, 0.1),
     Color::srgb(0.3, 0.3, 0.32),
 ];
-/// The scorch mark left on the floor; alpha is how dark it gets.
-pub const FX_SCORCH: Color = Color::srgba(0.03, 0.03, 0.03, 0.55);
 /// Camera shake: largest offset in metres and roll in radians at full
 /// trauma, and how long full trauma takes to die down.
 pub const FX_SHAKE_OFFSET: f32 = 0.45;

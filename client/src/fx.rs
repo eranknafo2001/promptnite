@@ -1,14 +1,12 @@
 //! Effects on top of the replay: when a bot is knocked out it blows up in a
-//! cartoon puff, chunks fly off, the camera shakes and a scorch mark stays on
-//! the floor until the round resets. Hand-rolled particles, no physics.
+//! cartoon puff, chunks fly off and the camera shakes. Hand-rolled particles, no physics.
 
 use bevy::prelude::*;
-use promptnite_bindings::{BotAction, Phase};
+use promptnite_bindings::BotAction;
 
 use crate::{
     arena::{self, Replay},
     theme,
-    ui::Screen,
 };
 
 pub fn plugin(app: &mut App) {
@@ -26,8 +24,6 @@ pub fn plugin(app: &mut App) {
 struct FxAssets {
     sphere: Handle<Mesh>,
     cube: Handle<Mesh>,
-    disc: Handle<Mesh>,
-    scorch: Handle<StandardMaterial>,
     dead: Handle<StandardMaterial>,
 }
 
@@ -58,9 +54,6 @@ struct Chunk {
     spin: Vec3,
 }
 
-#[derive(Component)]
-struct Scorch(u32);
-
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -69,13 +62,6 @@ fn setup(
     commands.insert_resource(FxAssets {
         sphere: meshes.add(Sphere::new(1.0)),
         cube: meshes.add(Cuboid::from_length(1.0)),
-        disc: meshes.add(Circle::new(1.0)),
-        scorch: materials.add(StandardMaterial {
-            base_color: theme::FX_SCORCH,
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
         dead: materials.add(theme::BOT_DEAD),
     });
 }
@@ -97,33 +83,14 @@ fn around(seed: u32) -> Vec3 {
 
 /// Blow up bots that were alive last frame and are dead now. Bots dead the
 /// first time we see them (joining mid-results, Prompting showing the last
-/// frame) don't count. Scorch marks go once their bot isn't lying dead in a
-/// fight or its results any more.
+/// frame) don't count.
 fn deaths(
     mut commands: Commands,
-    screen: Res<Screen>,
     replay: Res<Replay>,
     assets: Res<FxAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut state: ResMut<Deaths>,
-    scorches: Query<(Entity, &Scorch)>,
 ) {
-    let fought = matches!(
-        &*screen,
-        Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Fighting | Phase::Results)
-    );
-    let is_dead = |id| {
-        replay
-            .bots
-            .iter()
-            .any(|bot| bot.id == id && bot.action == BotAction::Dead)
-    };
-    for (entity, scorch) in &scorches {
-        if !fought || !is_dead(scorch.0) {
-            commands.entity(entity).despawn();
-        }
-    }
-
     let now: Vec<(u32, bool)> = replay
         .bots
         .iter()
@@ -194,22 +161,6 @@ fn deaths(
                 Mesh3d(assets.cube.clone()),
                 MeshMaterial3d(material),
                 Transform::from_translation(at).with_scale(Vec3::splat(size)),
-            ));
-        }
-
-        // A few overlapping flat discs make a blotchy scorch. Each sits a
-        // hair above the last so they don't flicker into each other.
-        for n in 0..4 {
-            let s = seed + 900 + n * 3;
-            let offset = around(s) * bot.radius * 0.6 * rand(s + 1);
-            let radius = bot.radius * (1.1 + 0.8 * rand(s + 2)) * if n == 0 { 1.3 } else { 1.0 };
-            commands.spawn((
-                Scorch(bot.id),
-                Mesh3d(assets.disc.clone()),
-                MeshMaterial3d(assets.scorch.clone()),
-                Transform::from_translation(at.with_y(0.01 + n as f32 * 0.002) + offset)
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                    .with_scale(Vec3::new(radius, radius * (0.75 + 0.4 * rand(s)), 1.0)),
             ));
         }
     }
