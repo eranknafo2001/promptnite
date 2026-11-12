@@ -3,18 +3,19 @@
 #   make server     local SpacetimeDB
 #   make publish    build + upload the module (again after changing server/ or sim/)
 #   make client     desktop client      |  make web   browser client
-#   make worker     the agent (Cloudflare Worker) on http://127.0.0.1:8787
+#   make worker     the agent (Cloudflare Worker, run locally)
 #
-# Without AGENT_URL the module hands every prompt the example bot. To use the
-# real agent, publish with the Worker's public URL (see README):
+# Without AGENT_SECRET the module hands every prompt the example bot. To use
+# the real agent, publish with a password and start the worker with the same
+# one (worker/.dev.vars, see README):
 #
-#   make publish AGENT_URL=https://promptnite-agent.<you>.workers.dev
-#
-# AGENT_SECRET is the shared password between the module and the agent worker.
+#   make publish AGENT_SECRET=dev-secret
+#   make worker
 
 DB           ?= promptnite
 STDB_ADDR    ?= 127.0.0.1:3210
-AGENT_SECRET ?= dev-secret
+AGENT_SECRET ?=
+# Only for a deployed worker: where the module wakes it up (see README).
 AGENT_URL    ?=
 
 .PHONY: server publish bindings worker worker-deploy client web web-release test
@@ -23,7 +24,7 @@ server:
 	spacetime start --listen-addr $(STDB_ADDR)
 
 publish:
-	AGENT_URL=$(AGENT_URL) AGENT_SECRET=$(AGENT_SECRET) spacetime publish $(DB) --yes
+	AGENT_SECRET=$(AGENT_SECRET) AGENT_URL=$(AGENT_URL) spacetime publish $(DB) --yes
 
 # Regenerate bindings/ after changing tables or reducers in server/. The
 # generator formats in its own style; `cargo fmt` brings it back to ours, which

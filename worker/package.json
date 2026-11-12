@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "(curl -s -o /dev/null --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:8787/ &); wrangler dev --var STAY_CONNECTED:true",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit"
   },

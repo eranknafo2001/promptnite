@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "dev": { "ip": "127.0.0.1", "port": 8787 },
+  // The Durable Object that holds the connection to the database (src/index.ts).
+  "durable_objects": { "bindings": [{ "name": "AGENT", "class_name": "Agent" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Agent"] }],
   // Where the game module lives. These are the local-development values;
   // change them (or use `wrangler deploy --var`) for a hosted database.
   "vars": {

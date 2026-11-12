@@ -1,6 +1,6 @@
 [package]
 name = "promptnite-server"
-description = "SpacetimeDB module: lobby, round loop, agent calls and the authoritative match simulation."
+description = "SpacetimeDB module: lobby, round loop, the agent work queue and the authoritative match simulation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,6 @@ crate-type = ["cdylib"]
 [dependencies]
 spacetimedb = "2.15.*"
 log = "0.4"
-serde_json = "1"
 promptnite-sim.workspace = true
 
 # Only needed for the error type in the entropy hook, see src/entropy.rs.

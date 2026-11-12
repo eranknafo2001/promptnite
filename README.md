@@ -40,38 +40,58 @@ bot, which is enough to try the game loop.
 
 Real bots are written by a model, called from a small
 [Cloudflare Worker](https://developers.cloudflare.com/workers/) in `worker/`.
-The module sends it each prompt; it sends back whatever Lua the model wrote.
-The module checks the script and only then marks the player ready.
+It connects to the database like a player does and waits for prompts; for
+each one it sends back whatever Lua the model wrote. The module checks the
+script and only then marks the player ready.
 
-Deploy it:
+The Worker fetches its own work, so on your machine it needs no public
+address and no tunnel.
+
+**Locally.** Publish the module with a password, and start the worker with
+the same one:
+
+```sh
+make publish AGENT_SECRET=dev-secret
+cp worker/.dev.vars.example worker/.dev.vars   # then put your model API key in it
+make worker
+```
+
+Locally the worker stays connected for as long as it runs. If it is not
+running, prompts fail with "The agent is offline".
+
+**Deployed.** Nothing to host yourself, and the Worker sleeps while nobody
+is prompting:
 
 ```sh
 cd worker
-npx wrangler secret put AGENT_SECRET        # any password you make up
+npx wrangler secret put AGENT_SECRET        # the password the module was published with
 npx wrangler secret put ANTHROPIC_API_KEY   # or OPENAI_API_KEY
 npx wrangler deploy --var SPACETIMEDB_URI:https://<your spacetimedb host> --var SPACETIMEDB_DB:promptnite
 ```
 
-Then publish the module with the Worker's URL and the same secret:
+Then publish the module with the Worker's address and the same password:
 
 ```sh
 make publish AGENT_URL=https://promptnite-agent.<you>.workers.dev AGENT_SECRET=<that password>
 ```
 
-| Worker setting | |
+`AGENT_URL` is how the module wakes the Worker when a prompt comes in. The
+Worker then connects, takes the prompts that were waiting, and disconnects
+again a few seconds after the last one is done. The first prompt after a quiet spell takes
+a second or two longer. The connection is held by a
+[Durable Object](https://developers.cloudflare.com/durable-objects/), which
+Cloudflare bills only for the time it is awake.
+
+| Worker setting (`worker/.dev.vars` locally; secrets and vars when deployed) | |
 | --- | --- |
+| `AGENT_SECRET` | The password the module was published with |
+| `SPACETIMEDB_URI` | Where the database is (default `http://127.0.0.1:3210`) |
+| `SPACETIMEDB_DB` | Its name (default `promptnite`) |
 | `ANTHROPIC_API_KEY` | Use Claude (default model `claude-haiku-5-5`) |
 | `OPENAI_API_KEY` | Use OpenAI (default model `gpt-6-luna`) |
 | `PROMPTNITE_PROVIDER` | `anthropic` or `openai`, when both keys are set |
 | `PROMPTNITE_MODEL` | Any other model of that provider |
 | `OPENAI_BASE_URL` | Another service that speaks the OpenAI Chat Completions format |
-
-**Running the agent locally.** `make worker` starts it on
-`http://127.0.0.1:8787` (copy `worker/.dev.vars.example` to `worker/.dev.vars`
-first). SpacetimeDB refuses to send requests to local addresses, so a local
-module can't reach it there. Give it a public address with a tunnel, for
-example `cloudflared tunnel --url http://127.0.0.1:8787`, and publish with
-`AGENT_URL` set to the tunnel's URL.
 
 ## CI and deploys
 
@@ -117,7 +137,7 @@ Repository variables. Only `ITCH_TARGET` is required; the rest show their defaul
 | --- | --- |
 | `sim/` | Rules, sandboxed Lua, match simulation |
 | `server/` | SpacetimeDB module |
-| `bindings/` | Generated module bindings (`make bindings`) |
+| `bindings/` | Generated module bindings for the client (`make bindings`) |
 | `client/` | Bevy client, desktop and browser |
 | `worker/` | Agent: prompt → Lua (Cloudflare Worker, TypeScript; Claude or OpenAI-format APIs) |
 
