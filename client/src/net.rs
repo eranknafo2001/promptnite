@@ -12,7 +12,12 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy_stdb::prelude::*;
-use promptnite_bindings::{sdk::Identity, *};
+use promptnite_bindings::{
+    sdk::{Identity, Table},
+    *,
+};
+
+use crate::ui::{Action, Screen, Snapshot};
 
 pub type Conn = StdbConnection<DbConnection>;
 type Subs = StdbSubscriptions<SubKey, RemoteModule>;
@@ -39,11 +44,11 @@ enum SubKey {
     Faults,
 }
 
-/// Where we are connecting to, for display.
+/// Where we are connecting to.
 #[derive(Resource)]
-pub struct Server {
-    pub uri: String,
-    pub database: String,
+struct Server {
+    uri: String,
+    database: String,
 }
 
 /// The name and room the player chose at this launch.
@@ -53,31 +58,27 @@ pub struct Session {
     /// The server hasn't been told yet (or not since the last reconnect).
     unsent: bool,
     /// Why the server turned the last join down (the room is full, ...).
-    pub error: Option<String>,
+    error: Option<String>,
     /// Filled in by the `join` reducer's callback, which runs outside Bevy's
     /// systems; `send_join` moves it into `error`.
     refusal: Arc<Mutex<Option<String>>>,
 }
 
 impl Session {
-    pub fn join(&mut self, name: String, room: String) {
+    fn join(&mut self, name: String, room: String) {
         self.joined = Some((name, room));
         self.unsent = true;
         self.error = None;
     }
-
-    pub fn has_joined(&self) -> bool {
-        self.joined.is_some()
-    }
 }
 
 /// Our own player row, if we ever played on this identity.
-pub fn me(conn: &Conn) -> Option<Player> {
+fn me(conn: &Conn) -> Option<Player> {
     conn.db().player().identity().find(&conn.try_identity()?)
 }
 
 /// Us and the room we are in, once the server has let us in.
-pub fn my_room(conn: &Conn) -> Option<(Player, Room)> {
+fn my_room(conn: &Conn) -> Option<(Player, Room)> {
     // `online` is only set by joining, so a row left over from an earlier
     // launch doesn't count.
     let me = me(conn).filter(|me| me.online)?;
@@ -106,10 +107,98 @@ pub fn plugin(app: &mut App) {
             .with_reconnect(StdbReconnectOptions::default())
             .with_background_driver(driver),
     )
+    .insert_resource(Screen::Connecting(server.uri.clone()))
     .insert_resource(server)
     .init_resource::<Session>()
     .add_systems(Startup, connect)
-    .add_systems(Update, (on_connected, send_join, follow_room).chain());
+    .add_systems(
+        Update,
+        (
+            on_connected,
+            perform,
+            send_join,
+            follow_room,
+            publish_screen,
+        )
+            .chain()
+            .before(crate::arena::replay),
+    );
+}
+
+/// Everything the UI needs, read from the SDK cache once per frame.
+fn publish_screen(
+    conn: Option<Res<Conn>>,
+    server: Res<Server>,
+    session: Res<Session>,
+    mut screen: ResMut<Screen>,
+) {
+    *screen = match conn.as_deref().filter(|conn| conn.is_active()) {
+        None => Screen::Connecting(server.uri.clone()),
+        Some(conn) => match snapshot(conn) {
+            Some(snapshot) => Screen::Room(Box::new(snapshot)),
+            None if session.joined.is_some() => Screen::Entering,
+            None => Screen::Join {
+                known_name: me(conn).map(|me| me.name),
+                error: session.error.clone(),
+            },
+        },
+    };
+}
+
+/// `None` until the player is in a room.
+fn snapshot(conn: &Conn) -> Option<Snapshot> {
+    let db = conn.db();
+    let (me, game) = my_room(conn)?;
+    // The cache can briefly hold rows of a room we just left.
+    let mut players: Vec<Player> = db
+        .player()
+        .iter()
+        .filter(|player| player.room_id == game.id)
+        .collect();
+    players.sort_by_key(|player| player.id);
+    Some(Snapshot {
+        submissions: db
+            .submission()
+            .iter()
+            .filter(|s| s.room_id == game.id && s.round == game.round)
+            .collect(),
+        faults: db
+            .match_fault()
+            .iter()
+            .filter(|fault| fault.room_id == game.id)
+            .collect(),
+        game,
+        players,
+        me,
+    })
+}
+
+/// Carry out what the player asked for in the UI.
+fn perform(
+    mut actions: MessageReader<Action>,
+    conn: Option<Res<Conn>>,
+    mut session: ResMut<Session>,
+) {
+    for action in actions.read() {
+        let result = match (action.clone(), conn.as_deref()) {
+            (Action::Join { name, room }, _) => {
+                session.join(name, room);
+                Ok(())
+            }
+            (Action::SubmitPrompt(prompt), Some(conn)) => conn.reducers().submit_prompt(prompt),
+            (
+                Action::SetRoomSettings {
+                    match_secs,
+                    house_bot,
+                },
+                Some(conn),
+            ) => conn.reducers().set_room_settings(match_secs, house_bot),
+            (_, None) => Ok(()),
+        };
+        if let Err(err) = result {
+            warn!("could not call reducer: {err}");
+        }
+    }
 }
 
 fn connect(mut cmds: Cmds) {
@@ -198,7 +287,7 @@ fn follow_room(conn: Option<Res<Conn>>, mut subs: ResMut<Subs>, mut following: L
 
 /// A setting from `?key=value` in the page URL (browser) or an environment
 /// variable (desktop).
-fn setting(_query_key: &str, _env_key: &str) -> Option<String> {
+pub fn setting(_query_key: &str, _env_key: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         let search = web_sys::window()?.location().search().ok()?;

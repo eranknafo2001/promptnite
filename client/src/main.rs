@@ -7,27 +7,44 @@
 //!   net.rs    connection to SpacetimeDB, subscriptions, identity token
 //!   arena.rs  3D scene and match replay
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
+//!   theme.rs  colours, type sizes and boxes: the look in one place
+//!   sandbox.rs  every screen with made-up data and no server (`--sandbox`)
 
 mod arena;
 mod net;
+mod sandbox;
+mod theme;
 mod ui;
 
 use bevy::prelude::*;
 
 fn main() {
-    App::new()
-        .insert_resource(ClearColor(Color::srgb(0.07, 0.08, 0.10)))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "promptnite".into(),
-                // Browser: render into the canvas from index.html and follow
-                // its size. Both settings are ignored on desktop.
-                canvas: Some("#game".into()),
-                fit_canvas_to_parent: true,
+    let sandbox = sandbox::enabled();
+    let mut app = App::new();
+    app.insert_resource(ClearColor(theme::BACKGROUND))
+        .add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: if sandbox {
+                        "promptnite sandbox"
+                    } else {
+                        "promptnite"
+                    }
+                    .into(),
+                    // Browser: render into the canvas from index.html and follow
+                    // its size. Both settings are ignored on desktop.
+                    canvas: Some("#game".into()),
+                    fit_canvas_to_parent: true,
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }))
-        .add_plugins((net::plugin, arena::plugin, ui::plugin))
-        .run();
+        )
+        .add_plugins((arena::plugin, ui::plugin));
+    if sandbox {
+        app.add_plugins(sandbox::plugin);
+    } else {
+        app.add_plugins(net::plugin);
+    }
+    app.run();
 }
