@@ -71,7 +71,7 @@ fn setup(
 }
 
 /// A cheap repeatable random number in 0..1.
-fn rand(seed: u32) -> f32 {
+pub fn rand(seed: u32) -> f32 {
     let mut x = seed.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
     x ^= x >> 15;
     x = x.wrapping_mul(0x2C1B_3C6D);

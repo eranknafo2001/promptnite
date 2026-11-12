@@ -179,6 +179,86 @@ fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> i
     )
 }
 
+/// The city around us: a grid of other buildings with streets between them,
+/// their roofs lower than ours so they never get in the way, some with AC
+/// units or a water tank on top. Seeded, so it is the same every time.
+fn spawn_neighbours(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    use crate::fx::rand;
+    // A block per cell; cells next to ours stay empty as the street.
+    const CELL: f32 = 12.0;
+    const REACH: i32 = 5;
+    const DEPTH: f32 = 150.0;
+    let cube = meshes.add(Cuboid::from_length(1.0));
+    let tank = meshes.add(Cylinder::new(0.5, 1.0));
+    let walls: Vec<_> = theme::NEIGHBOURS
+        .iter()
+        .map(|&color| materials.add(color))
+        .collect();
+    let clutter = materials.add(theme::BUILDING_LEDGE);
+    let mut part =
+        |mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, at: Vec3, size: Vec3| {
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(at).with_scale(size),
+            ));
+        };
+
+    for x in -REACH..=REACH {
+        for z in -REACH..=REACH {
+            if x.abs() <= 1 && z.abs() <= 1 {
+                continue;
+            }
+            let seed = ((x + 50) * 131 + (z + 50)) as u32 * 7;
+            // Every so often a gap: a plaza or a wider street.
+            if rand(seed) < 0.3 {
+                continue;
+            }
+            let width = CELL * (0.55 + 0.3 * rand(seed + 1));
+            let depth = CELL * (0.55 + 0.3 * rand(seed + 2));
+            let roof = -14.0 - 30.0 * rand(seed + 3);
+            let centre = Vec3::new(
+                x as f32 * CELL + (rand(seed + 4) - 0.5) * 2.0,
+                roof,
+                z as f32 * CELL + (rand(seed + 5) - 0.5) * 2.0,
+            );
+            let wall = &walls[(rand(seed + 6) * walls.len() as f32) as usize % walls.len()];
+            part(
+                &cube,
+                wall,
+                centre - Vec3::Y * DEPTH / 2.0,
+                Vec3::new(width, DEPTH, depth),
+            );
+            // Roof clutter, kept away from the edges.
+            let spot = |k: u32| {
+                centre
+                    + Vec3::new(
+                        (rand(seed + k) - 0.5) * (width - 3.0),
+                        0.0,
+                        (rand(seed + k + 1) - 0.5) * (depth - 3.0),
+                    )
+            };
+            for k in 0..(rand(seed + 7) * 3.0) as u32 {
+                let size = Vec3::new(1.2, 0.8, 1.6);
+                part(
+                    &cube,
+                    &clutter,
+                    spot(10 + k * 2) + Vec3::Y * size.y / 2.0,
+                    size,
+                );
+            }
+            if rand(seed + 8) < 0.35 {
+                let size = Vec3::new(2.2, 2.4, 2.2);
+                part(&tank, &clutter, spot(20) + Vec3::Y * size.y / 2.0, size);
+            }
+        }
+    }
+}
+
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -187,6 +267,7 @@ fn setup(
 ) {
     spawn_rooftop(&mut commands, &assets);
     spawn_building(&mut commands, &mut meshes, &mut materials);
+    spawn_neighbours(&mut commands, &mut meshes, &mut materials);
 
     // A sunny afternoon: a warm sun low enough for long, crisp shadows, and blue sky light
     // filling them in.

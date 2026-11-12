@@ -16,6 +16,15 @@ pub const SKY_TOP: Color = Color::srgb(0.0, 0.30, 0.52);
 /// The building under the rooftop: walls, and the ledge at each floor.
 pub const BUILDING: Color = Color::srgb(0.52, 0.54, 0.57);
 pub const BUILDING_LEDGE: Color = Color::srgb(0.66, 0.67, 0.69);
+/// The other buildings around the arena; their roof clutter uses
+/// `BUILDING_LEDGE`.
+/// Cool, light greys so the city sits back behind the arena.
+pub const NEIGHBOURS: [Color; 4] = [
+    Color::srgb(0.60, 0.65, 0.70),
+    Color::srgb(0.68, 0.72, 0.76),
+    Color::srgb(0.54, 0.60, 0.66),
+    Color::srgb(0.72, 0.72, 0.72),
+];
 /// Sunlight: a warm white, and how strong it is in lux.
 pub const SUN: Color = Color::srgb(1.0, 0.94, 0.82);
 pub const SUN_LUX: f32 = 4_500.0;
