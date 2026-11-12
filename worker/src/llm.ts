@@ -209,7 +209,10 @@ async function askOpenAi(env: ModelEnv, model: string, turns: Turn[]): Promise<s
       if (signal.aborted) throw new AgentError(TOO_SLOW);
       throw new AgentError(`Could not reach the model API: ${err instanceof Error ? err.message : err}`);
     }
-    return { response, reply: (await response.json().catch(() => null)) as any };
+    const reply = (await response.json().catch(() => null)) as any;
+    // The deadline can also pass while the body is still arriving.
+    if (signal.aborted) throw new AgentError(TOO_SLOW);
+    return { response, reply };
   };
 
   let { response, reply } = await ask({ reasoning_effort: OPENAI_REASONING_EFFORT });
