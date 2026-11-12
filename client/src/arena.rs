@@ -7,7 +7,11 @@
 use bevy::prelude::*;
 use promptnite_bindings::*;
 
-use crate::{net::Conn, theme::PALETTE, ui::Screen};
+use crate::{
+    net::Conn,
+    theme::{self, PALETTE},
+    ui::Screen,
+};
 
 /// What is on screen this frame. Written here, read by the UI for labels.
 #[derive(Resource, Default)]
@@ -121,6 +125,35 @@ fn spawn_rooftop(commands: &mut Commands, assets: &AssetServer) {
     }
 }
 
+/// The building under the roof: grey walls going down well past the bottom
+/// of the screen, with a ledge at every floor, so the arena doesn't float.
+fn spawn_building(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    const FLOORS: i32 = 16;
+    const FLOOR_HEIGHT: f32 = 3.5;
+    // Under the roof blocks, which are 4 m deep.
+    const TOP: f32 = -4.0;
+    let side = ARENA_HALF_SIZE * 2.0;
+    let height = FLOORS as f32 * FLOOR_HEIGHT;
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(side, height, side))),
+        MeshMaterial3d(materials.add(theme::BUILDING)),
+        Transform::from_xyz(0.0, TOP - height / 2.0, 0.0),
+    ));
+    let ledge = meshes.add(Cuboid::new(side + 0.4, 0.3, side + 0.4));
+    let ledge_material = materials.add(theme::BUILDING_LEDGE);
+    for floor in 0..FLOORS {
+        commands.spawn((
+            Mesh3d(ledge.clone()),
+            MeshMaterial3d(ledge_material.clone()),
+            Transform::from_xyz(0.0, TOP - floor as f32 * FLOOR_HEIGHT, 0.0),
+        ));
+    }
+}
+
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -128,6 +161,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     spawn_rooftop(&mut commands, &assets);
+    spawn_building(&mut commands, &mut meshes, &mut materials);
 
     commands.spawn((
         DirectionalLight {
@@ -139,7 +173,20 @@ fn setup(
     ));
 
     // Moved behind the player's own edge once they are in a room.
-    commands.spawn((ArenaCamera, Camera3d::default(), camera_transform(0)));
+    commands.spawn((
+        ArenaCamera,
+        Camera3d::default(),
+        camera_transform(0),
+        // Far floors of the building fade into the sky.
+        DistanceFog {
+            color: theme::BACKGROUND,
+            falloff: FogFalloff::Linear {
+                start: 30.0,
+                end: 75.0,
+            },
+            ..default()
+        },
+    ));
 
     commands.insert_resource(BotAssets {
         mesh: meshes.add(Sphere::new(1.0)),
