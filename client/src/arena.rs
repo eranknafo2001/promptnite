@@ -179,9 +179,19 @@ fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> i
     )
 }
 
-/// The city around us: a grid of other buildings with streets between them,
-/// their roofs lower than ours so they never get in the way, some with AC
-/// units or a water tank on top. Seeded, so it is the same every time.
+/// Street level, where our building and every other one stands.
+const GROUND: f32 = -60.0;
+
+/// Two rooftop parks on the blocks at opposite corners of ours, so one is in
+/// view from every edge. (Down on the street the buildings hide a park.)
+fn is_park(x: i32, z: i32) -> bool {
+    matches!((x, z), (-2, -2) | (2, 2))
+}
+
+/// The city around us: the ground, a grid of other buildings with streets
+/// between them, their roofs lower than ours so they never get in the way,
+/// some with AC units or a water tank on top, and a couple of parks.
+/// Seeded, so it is the same every time.
 fn spawn_neighbours(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -190,10 +200,19 @@ fn spawn_neighbours(
     use crate::fx::rand;
     // A block per cell; cells next to ours stay empty as the street.
     const CELL: f32 = 12.0;
-    const REACH: i32 = 5;
-    const DEPTH: f32 = 150.0;
+    // Far enough that the ground at the top of the screen is city too.
+    const REACH: i32 = 8;
     let cube = meshes.add(Cuboid::from_length(1.0));
     let tank = meshes.add(Cylinder::new(0.5, 1.0));
+    let ball = meshes.add(Sphere::new(0.5));
+    let grass = materials.add(theme::PARK_GRASS);
+    let leaves = materials.add(theme::TREE_LEAVES);
+    let trunk = materials.add(theme::TREE_TRUNK);
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
+        MeshMaterial3d(materials.add(theme::STREET)),
+        Transform::from_xyz(0.0, GROUND, 0.0),
+    ));
     let walls: Vec<_> = theme::NEIGHBOURS
         .iter()
         .map(|&color| materials.add(color))
@@ -214,6 +233,37 @@ fn spawn_neighbours(
                 continue;
             }
             let seed = ((x + 50) * 131 + (z + 50)) as u32 * 7;
+            if is_park(x, z) {
+                const ROOF: f32 = -14.0;
+                let side = CELL - 1.0;
+                let centre = Vec3::new(x as f32 * CELL, ROOF, z as f32 * CELL);
+                let height = ROOF - GROUND;
+                part(
+                    &cube,
+                    &walls[0],
+                    centre - Vec3::Y * height / 2.0,
+                    Vec3::new(side, height, side),
+                );
+                part(&cube, &grass, centre, Vec3::new(side, 0.4, side));
+                for k in 0..7 {
+                    let s = seed + 30 + k * 3;
+                    let at = centre
+                        + Vec3::new(
+                            (rand(s) - 0.5) * (side - 4.0),
+                            0.0,
+                            (rand(s + 1) - 0.5) * (side - 4.0),
+                        );
+                    let crown = 2.2 + 1.3 * rand(s + 2);
+                    part(&tank, &trunk, at + Vec3::Y, Vec3::new(0.4, 2.0, 0.4));
+                    part(
+                        &ball,
+                        &leaves,
+                        at + Vec3::Y * (1.6 + crown / 2.0),
+                        Vec3::splat(crown),
+                    );
+                }
+                continue;
+            }
             // Every so often a gap: a plaza or a wider street.
             if rand(seed) < 0.3 {
                 continue;
@@ -227,11 +277,12 @@ fn spawn_neighbours(
                 z as f32 * CELL + (rand(seed + 5) - 0.5) * 2.0,
             );
             let wall = &walls[(rand(seed + 6) * walls.len() as f32) as usize % walls.len()];
+            let height = roof - GROUND;
             part(
                 &cube,
                 wall,
-                centre - Vec3::Y * DEPTH / 2.0,
-                Vec3::new(width, DEPTH, depth),
+                centre - Vec3::Y * height / 2.0,
+                Vec3::new(width, height, depth),
             );
             // Roof clutter, kept away from the edges.
             let spot = |k: u32| {

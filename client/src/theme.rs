@@ -18,6 +18,11 @@ pub const BUILDING: Color = Color::srgb(0.52, 0.54, 0.57);
 pub const BUILDING_LEDGE: Color = Color::srgb(0.66, 0.67, 0.69);
 /// The other buildings around the arena; their roof clutter uses
 /// `BUILDING_LEDGE`.
+/// Street level, a park's grass and its trees.
+pub const STREET: Color = Color::srgb(0.36, 0.38, 0.41);
+pub const PARK_GRASS: Color = Color::srgb(0.42, 0.66, 0.32);
+pub const TREE_LEAVES: Color = Color::srgb(0.27, 0.55, 0.25);
+pub const TREE_TRUNK: Color = Color::srgb(0.42, 0.30, 0.20);
 /// Cool, light greys so the city sits back behind the arena.
 pub const NEIGHBOURS: [Color; 4] = [
     Color::srgb(0.60, 0.65, 0.70),
