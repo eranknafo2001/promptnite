@@ -2,7 +2,10 @@
 //! interface is built from. Restyling starts here; `make sandbox` shows every
 //! screen without a server (see `sandbox.rs`).
 
-use bevy::color::Color;
+use bevy::{
+    color::Color,
+    render::view::{ColorGrading, ColorGradingGlobal, ColorGradingSection},
+};
 use bevy_egui::egui::{self, Color32};
 
 // The arena.
@@ -36,6 +39,26 @@ pub const SUN_LUX: f32 = 4_500.0;
 /// Light from the sky that fills the shadows with a cool blue.
 pub const SKY_LIGHT: Color = Color::srgb(0.65, 0.8, 1.0);
 pub const SKY_LIGHT_BRIGHTNESS: f32 = 250.0;
+/// The final grade on the arena camera: a touch warmer, more saturated and
+/// a little more contrast, for a bright, sunny look.
+pub fn color_grading() -> ColorGrading {
+    let section = |saturation, contrast| ColorGradingSection {
+        saturation,
+        contrast,
+        ..Default::default()
+    };
+    ColorGrading {
+        global: ColorGradingGlobal {
+            temperature: 0.04,
+            post_saturation: 1.15,
+            ..Default::default()
+        },
+        shadows: section(1.1, 1.0),
+        midtones: section(1.05, 1.1),
+        highlights: section(1.0, 1.0),
+    }
+}
+
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.

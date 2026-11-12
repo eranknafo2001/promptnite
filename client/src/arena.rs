@@ -342,6 +342,7 @@ fn setup(
         ArenaCamera,
         Camera3d::default(),
         camera_transform(0),
+        theme::color_grading(),
         children![sky(&mut meshes, &mut materials)],
     ));
 
