@@ -244,10 +244,10 @@ fn debris(
 }
 
 /// Sway the camera gently and jolt it after a blast, on top of its steady
-/// transform. `point_of_view` only rewrites the camera when it changes the
-/// view, so if the camera still holds what we wrote last frame, the steady
-/// transform is the one we kept; otherwise someone moved it and that is the
-/// new steady one. Either way the offsets never build up.
+/// transform. In a room `point_of_view` writes the camera every frame;
+/// elsewhere nothing does. So if the camera still holds what we wrote last
+/// frame, the steady transform is the one we kept; otherwise someone moved
+/// it and that is the new steady one. Either way the offsets never build up.
 fn camera(
     time: Res<Time>,
     mut state: ResMut<FxState>,

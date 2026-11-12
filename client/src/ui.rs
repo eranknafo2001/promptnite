@@ -48,10 +48,11 @@ const MAX_PROMPT_CHARS: usize = 2_000;
 /// anything within its own limits (`sim/src/rules.rs`).
 const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
 
-/// Share of the window height taken by the prompt box.
-const PROMPT_BOX_SHARE: f32 = 0.2;
-/// ...but never so small that a line of text and the footer don't fit.
-const PROMPT_BOX_MIN_HEIGHT: f32 = 110.0;
+/// Share of the window width taken by the prompt column on the right, and
+/// its limits. The camera frames the arena in what is left (see
+/// `arena::STRATEGY_VIEW`).
+const PROMPT_COLUMN_SHARE: f32 = 0.34;
+const PROMPT_COLUMN_WIDTH: std::ops::RangeInclusive<f32> = 360.0..=540.0;
 
 /// What there is to show. Filled in every frame by `net` from the server, or
 /// by `sandbox` from made-up data; the UI only reads it.
@@ -168,7 +169,7 @@ impl Snapshot {
             .map_or_else(|| format!("Player {id}"), |player| player.name.clone())
     }
 
-    fn submission_of(&self, id: u32) -> Option<&Submission> {
+    pub fn submission_of(&self, id: u32) -> Option<&Submission> {
         self.submissions.iter().find(|s| s.player_id == id)
     }
 
@@ -246,7 +247,7 @@ fn draw(
     banner(&background, screen, snapshot, &replay);
     let clock = match_timer(&background, screen, &snapshot.game, &replay);
     faults(ctx, snapshot, &replay, clock);
-    roster(&background, screen, snapshot, &replay);
+    let roster = roster(&background, screen, snapshot, &replay);
 
     let game = &snapshot.game;
     if game.phase == Phase::Prompting && snapshot.i_own_the_room() {
@@ -256,7 +257,8 @@ fn draw(
     match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
-            prompt_box(ctx, screen, snapshot, error, &mut form, &mut actions);
+            let top = roster.bottom() + 12.0;
+            prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
             status_line(ctx, true, "Your agent is building your bot…");
@@ -368,22 +370,25 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
     )
 }
 
-/// Second screen, every round: the prompt, in the bottom fifth of the window.
-/// Enter adds a line; Command+Enter (or Ctrl+Enter) sends.
+/// Second screen, every round: the prompt, in a column down the right side
+/// from `top` (under the roster). What went wrong last time, if anything,
+/// sits at the head of it. Enter adds a line; Command+Enter (or Ctrl+Enter)
+/// sends.
 fn prompt_box(
     ctx: &egui::Context,
     screen: egui::Rect,
+    top: f32,
     snapshot: &Snapshot,
     error: Option<&str>,
     form: &mut Form,
     actions: &mut MessageWriter<Action>,
 ) {
-    let height = (screen.height() * PROMPT_BOX_SHARE).max(PROMPT_BOX_MIN_HEIGHT);
+    let width = (screen.width() * PROMPT_COLUMN_SHARE)
+        .clamp(*PROMPT_COLUMN_WIDTH.start(), *PROMPT_COLUMN_WIDTH.end());
     let outer = egui::Rect::from_min_max(
-        egui::pos2(screen.left(), screen.bottom() - height),
-        screen.max,
-    )
-    .shrink(EDGE);
+        egui::pos2(screen.right() - EDGE - width, top),
+        egui::pos2(screen.right() - EDGE, screen.bottom() - EDGE),
+    );
     let frame = box_frame();
     let inner = outer.size() - frame.total_margin().sum();
 
@@ -401,45 +406,70 @@ fn prompt_box(
                         | input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
                 });
 
-                let footer_height = 24.0;
-                let text_height = inner.y - footer_height - ui.spacing().item_spacing.y;
-                egui::ScrollArea::vertical()
-                    .max_height(text_height)
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        let field = ui.add(
-                            egui::TextEdit::multiline(&mut form.prompt)
-                                .hint_text("Tell your agent how your bot should fight…")
-                                .char_limit(MAX_PROMPT_CHARS)
-                                .font(egui::FontId::proportional(theme::SIZE_BODY))
-                                .text_color(theme::INK)
-                                .desired_width(f32::INFINITY)
-                                .min_size(egui::vec2(0.0, text_height))
-                                // The box around it is already drawn.
-                                .frame(egui::Frame::NONE),
-                        );
-                        let this = Field::Prompt(snapshot.game.id, snapshot.game.round);
-                        if form.focused != Some(this) {
-                            form.focused = Some(this);
-                            field.request_focus();
-                        }
+                ui.horizontal(|ui| {
+                    ui.label(theme::heading("Your prompt"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(small(format!("Round {}", snapshot.game.round)));
                     });
+                });
+                ui.label(small("Tell your agent how your bot should fight."));
+                ui.add_space(8.0);
+                if let Some(error) = error.filter(|error| !error.is_empty()) {
+                    theme::error_panel(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(theme::error_heading("Your agent couldn't build a bot"));
+                        ui.label(theme::error_body(error));
+                    });
+                    ui.add_space(10.0);
+                }
+
+                let footer_height = 28.0;
+                let text_height =
+                    ui.available_height() - footer_height - ui.spacing().item_spacing.y;
+                theme::field_frame().show(ui, |ui| {
+                    let text_height = text_height - 16.0;
+                    egui::ScrollArea::vertical()
+                        .max_height(text_height)
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            let field = ui.add(
+                                egui::TextEdit::multiline(&mut form.prompt)
+                                    .hint_text("Rush the weakest bot, then circle the edge…")
+                                    .char_limit(MAX_PROMPT_CHARS)
+                                    .font(egui::FontId::proportional(theme::SIZE_BODY))
+                                    .text_color(theme::INK)
+                                    .desired_width(f32::INFINITY)
+                                    .min_size(egui::vec2(0.0, text_height))
+                                    // The box around it is already drawn.
+                                    .frame(egui::Frame::NONE),
+                            );
+                            let this = Field::Prompt(snapshot.game.id, snapshot.game.round);
+                            if form.focused != Some(this) {
+                                form.focused = Some(this);
+                                field.request_focus();
+                            }
+                        });
+                });
 
                 let mut clicked = false;
                 ui.allocate_ui_with_layout(
-                    egui::vec2(inner.x, footer_height),
+                    egui::vec2(ui.available_width(), footer_height),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
                         let ready = !form.prompt.trim().is_empty();
-                        clicked = ui.add_enabled(ready, egui::Button::new("Send")).clicked();
+                        clicked = ui
+                            .add_enabled(
+                                ready,
+                                egui::Button::new(
+                                    egui::RichText::new("Send").font(theme::bold(theme::SIZE_BODY)),
+                                ),
+                            )
+                            .clicked();
                         ui.label(small(if form.mac {
                             "⌘ Enter to send"
                         } else {
                             "Ctrl + Enter to send"
                         }));
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(small(format!("Round {}", snapshot.game.round)));
-                        });
                     },
                 );
 
@@ -449,23 +479,6 @@ fn prompt_box(
                 }
             });
         });
-
-    // Why the last prompt didn't work out, right above the box.
-    if let Some(error) = error.filter(|error| !error.is_empty()) {
-        egui::Area::new(egui::Id::new("prompt_error"))
-            .anchor(
-                egui::Align2::LEFT_BOTTOM,
-                egui::vec2(EDGE, -(height - EDGE) - 6.0),
-            )
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.set_max_width(screen.width() - 2.0 * EDGE);
-                theme::error_panel(ui, |ui| {
-                    ui.label(theme::error_heading("Your agent couldn't build a bot"));
-                    ui.label(theme::error_body(error));
-                });
-            });
-    }
 }
 
 /// The room's settings, top left. Only the owner gets them, and only while
@@ -520,12 +533,18 @@ fn status_line(ctx: &egui::Context, busy: bool, text: &str) {
         });
 }
 
-/// Everyone in the room and what they are up to, top right.
+/// Everyone in the room and what they are up to, top right. Returns the
+/// box it took up, so the prompt column can start below it.
 ///
 /// Painted directly instead of laid out by egui: an anchored `Area` is placed
 /// using its size from the previous frame, so it would jump for a frame
 /// whenever a state changed length.
-fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
+fn roster(
+    painter: &egui::Painter,
+    screen: egui::Rect,
+    snapshot: &Snapshot,
+    replay: &Replay,
+) -> egui::Rect {
     const DOT: f32 = 9.0;
     const GAP: f32 = 6.0;
     const COLUMN_GAP: f32 = 14.0;
@@ -636,6 +655,7 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
             y += HEADER_GAP;
         }
     }
+    outer
 }
 
 /// What one player (or the house bot) is doing right now, in a word or two,

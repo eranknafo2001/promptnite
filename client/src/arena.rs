@@ -41,11 +41,48 @@ pub struct BotView {
 #[derive(Component)]
 pub struct ArenaCamera;
 
-/// Tilted view from behind edge `edge` of the arena, looking across it.
+/// A camera pose relative to the player's edge: where the eye is and the
+/// point it looks at, each as (outward, up, to the right) from the centre.
+struct View {
+    eye: Vec3,
+    focus: Vec3,
+}
+
+/// Watching the fight: tilted, from behind the player's own edge.
+const FIGHT_VIEW: View = View {
+    eye: Vec3::new(19.0, 21.0, 0.0),
+    focus: Vec3::new(1.0, 0.0, 0.0),
+};
+
+/// Writing a prompt: lifted high and steeper, though not straight down,
+/// for a planning-the-attack feel. Eye and focus both slide to the right
+/// (a pan, not a turn) so the arena sits square, left of the prompt column
+/// on the right of the screen.
+const STRATEGY_VIEW: View = View {
+    eye: Vec3::new(11.0, 38.0, 4.5),
+    focus: Vec3::new(0.0, 0.0, 4.5),
+};
+
+/// `view` from behind edge `edge`, as world (eye, focus).
 /// The edge table must match `edge_direction` in `sim/src/rules.rs`.
-fn camera_transform(edge: u32) -> Transform {
+fn place(view: &View, edge: u32) -> (Vec3, Vec3) {
     let outward = outward(edge);
-    Transform::from_translation(outward * 19.0 + Vec3::Y * 21.0).looking_at(outward, Vec3::Y)
+    let right = Vec3::Y.cross(outward);
+    let world = |v: Vec3| outward * v.x + Vec3::Y * v.y + right * v.z;
+    (world(view.eye), world(view.focus))
+}
+
+fn camera_transform(edge: u32) -> Transform {
+    let (eye, focus) = place(&FIGHT_VIEW, edge);
+    Transform::from_translation(eye).looking_at(focus, Vec3::Y)
+}
+
+/// Where the camera's eye and focus are and how fast they move: both
+/// follow a spring to the view the game wants.
+#[derive(Resource, Default)]
+pub struct CameraSpring {
+    at: Option<(Vec3, Vec3)>,
+    velocity: (Vec3, Vec3),
 }
 
 /// Out from the centre towards edge `edge`.
@@ -75,6 +112,7 @@ pub struct BotAssets {
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Replay>()
+        .init_resource::<CameraSpring>()
         .add_systems(Startup, setup)
         .add_systems(Update, (point_of_view, (replay, sync_bots).chain()));
 }
@@ -356,15 +394,46 @@ fn setup(
     });
 }
 
-/// Everybody watches the arena from behind the edge their own bot starts at.
-pub fn point_of_view(screen: Res<Screen>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
+/// Everybody watches the arena from behind the edge their own bot starts at:
+/// lifted into the strategy view while writing a prompt, the fight view the
+/// rest of the time. The camera springs between the two, a quick
+/// snap that overshoots a touch and settles.
+pub fn point_of_view(
+    time: Res<Time>,
+    screen: Res<Screen>,
+    mut spring: ResMut<CameraSpring>,
+    mut camera: Single<&mut Transform, With<ArenaCamera>>,
+) {
+    // Stiffness, and damping just under critical for the overshoot.
+    const STIFFNESS: f32 = 70.0;
+    const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
+
     let Screen::Room(snapshot) = &*screen else {
         return;
     };
-    let wanted = camera_transform(snapshot.me.edge);
-    if **camera != wanted {
-        **camera = wanted;
+    // Only while the prompt box is open, as in `ui::draw`: nothing sent
+    // yet this round, or the last try failed.
+    let writing = snapshot.game.phase == Phase::Prompting
+        && matches!(
+            snapshot.submission_of(snapshot.me.id).map(|s| s.status),
+            None | Some(SubmissionStatus::Failed)
+        );
+    let view = if writing { &STRATEGY_VIEW } else { &FIGHT_VIEW };
+    let (eye, focus) = place(view, snapshot.me.edge);
+    let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
+    // A long frame (a hitch, a hidden tab) must not fling the camera.
+    let dt = time.delta_secs().min(1.0 / 30.0);
+    let (mut v_eye, mut v_focus) = spring.velocity;
+    for (pos, vel, goal) in [
+        (&mut at, &mut v_eye, eye),
+        (&mut focus_at, &mut v_focus, focus),
+    ] {
+        *vel += (STIFFNESS * (goal - *pos) - DAMPING * *vel) * dt;
+        *pos += *vel * dt;
     }
+    spring.at = Some((at, focus_at));
+    spring.velocity = (v_eye, v_focus);
+    **camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
 }
 
 /// Decide which tick to show and blend the frames around it. Without a
