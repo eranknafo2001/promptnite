@@ -39,6 +39,15 @@ pub fn edge_direction(edge: u32) -> (f32, f32) {
 /// Collision/visual radius of a bot.
 pub const BOT_RADIUS: f32 = 0.5;
 
+/// A railing stands on the outermost strip of the arena, this deep (the
+/// client's railing model, `client/src/arena.rs`). Bots are stopped by it,
+/// not by the arena's edge behind it.
+pub const RAILING_DEPTH: f32 = 0.4;
+
+/// A bot's centre stays within `-BOT_LIMIT..=BOT_LIMIT` on both axes, so its
+/// body touches the railing without going into it.
+pub const BOT_LIMIT: f32 = ARENA_HALF_SIZE - RAILING_DEPTH - BOT_RADIUS;
+
 pub const MAX_HP: i32 = 100;
 
 /// Distance covered by one `walk` action, in arena units per second.
