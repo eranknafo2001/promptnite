@@ -12,6 +12,12 @@ pub const BACKGROUND: Color = Color::srgb(0.62, 0.78, 0.92);
 /// The building under the rooftop: walls, and the ledge at each floor.
 pub const BUILDING: Color = Color::srgb(0.52, 0.54, 0.57);
 pub const BUILDING_LEDGE: Color = Color::srgb(0.66, 0.67, 0.69);
+/// Sunlight: a warm white, and how strong it is in lux.
+pub const SUN: Color = Color::srgb(1.0, 0.94, 0.82);
+pub const SUN_LUX: f32 = 4_500.0;
+/// Light from the sky that fills the shadows with a cool blue.
+pub const SKY_LIGHT: Color = Color::srgb(0.65, 0.8, 1.0);
+pub const SKY_LIGHT_BRIGHTNESS: f32 = 250.0;
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.

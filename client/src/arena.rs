@@ -163,14 +163,22 @@ fn setup(
     spawn_rooftop(&mut commands, &assets);
     spawn_building(&mut commands, &mut meshes, &mut materials);
 
+    // A sunny afternoon: a warm sun low enough for long, crisp shadows, and blue sky light
+    // filling them in.
     commands.spawn((
         DirectionalLight {
-            illuminance: light_consts::lux::OVERCAST_DAY,
+            color: theme::SUN,
+            illuminance: theme::SUN_LUX,
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(6.0, 14.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(-8.0, 11.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    commands.insert_resource(GlobalAmbientLight {
+        color: theme::SKY_LIGHT,
+        brightness: theme::SKY_LIGHT_BRIGHTNESS,
+        ..default()
+    });
 
     // Moved behind the player's own edge once they are in a room.
     commands.spawn((
