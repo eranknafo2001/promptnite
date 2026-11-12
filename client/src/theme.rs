@@ -9,9 +9,11 @@ use bevy_egui::egui::{self, Color32};
 
 /// The sky at the bottom of the screen, and the haze the building below the
 /// roof fades into.
-pub const BACKGROUND: Color = Color::srgb(0.02, 0.16, 0.52);
+/// Both sky colours share the rooftop floor's teal-blue hue, so the scene
+/// reads as one palette.
+pub const BACKGROUND: Color = Color::srgb(0.60, 0.86, 0.95);
 /// The sky at the top of the screen.
-pub const SKY_TOP: Color = Color::srgb(0.62, 0.78, 0.92);
+pub const SKY_TOP: Color = Color::srgb(0.0, 0.30, 0.52);
 /// The building under the rooftop: walls, and the ledge at each floor.
 pub const BUILDING: Color = Color::srgb(0.52, 0.54, 0.57);
 pub const BUILDING_LEDGE: Color = Color::srgb(0.66, 0.67, 0.69);
