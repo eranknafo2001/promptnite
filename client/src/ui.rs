@@ -65,6 +65,9 @@ pub const COMPACT_WIDTH: f32 = 640.0;
 /// A compact window this low has the on-screen keyboard open: the prompt
 /// takes all of it.
 const KEYBOARD_OPEN_HEIGHT: f32 = 520.0;
+/// How much of a phone's screen, from the top, an on-screen keyboard leaves
+/// free. On the low side, so nothing ends up behind a tall keyboard.
+const KEYBOARD_FREE_SHARE: f32 = 0.46;
 /// How tall a button is on a touch screen.
 const TOUCH_BUTTON: f32 = 44.0;
 /// How tall the "Your build" card is.
@@ -298,7 +301,7 @@ fn draw(
     if !theme::fonts_ready(ctx) {
         return Ok(());
     }
-    let screen_rect = ctx.viewport_rect();
+    let screen_rect = clear_of_keyboard(ctx, form.touch);
     let mut background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("arena_overlay"),
@@ -323,7 +326,7 @@ fn draw(
             return Ok(());
         }
         Screen::Join { known_name, error } => {
-            join_screen(ctx, known_name, error, &mut form, &mut actions);
+            join_screen(ctx, screen_rect, known_name, error, &mut form, &mut actions);
             return Ok(());
         }
         Screen::Room(snapshot) => snapshot,
@@ -453,9 +456,29 @@ fn draw(
     Ok(())
 }
 
-/// First screen, on every launch: who are you, and which room?
+/// The part of the window the on-screen keyboard leaves free. Opened as its
+/// own page, the window gets smaller when the keyboard comes up. Inside
+/// another page (itch.io) it does not, and the game cannot tell how big the
+/// keyboard is: so while a text box is being edited in a phone-sized window
+/// that is still its full height, count the lower part as covered.
+fn clear_of_keyboard(ctx: &egui::Context, touch: bool) -> egui::Rect {
+    let window = ctx.viewport_rect();
+    let covered = touch
+        && ctx.text_edit_focused()
+        && window.width() < COMPACT_WIDTH
+        && window.height() >= KEYBOARD_OPEN_HEIGHT;
+    if covered {
+        window.with_max_y(window.top() + window.height() * KEYBOARD_FREE_SHARE)
+    } else {
+        window
+    }
+}
+
+/// First screen, on every launch: who are you, and which room? Centred in
+/// `screen`.
 fn join_screen(
     ctx: &egui::Context,
+    screen: egui::Rect,
     known_name: &Option<String>,
     error: &Option<String>,
     form: &mut Form,
@@ -472,10 +495,13 @@ fn join_screen(
     }
 
     egui::Area::new(egui::Id::new("join_screen"))
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .anchor(
+            egui::Align2::CENTER_CENTER,
+            screen.center() - ctx.viewport_rect().center(),
+        )
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
-                let room_for_it = ctx.viewport_rect().width()
+                let room_for_it = screen.width()
                     - 2.0 * (EDGE + f32::from(theme::BOX_MARGIN) + theme::PANEL_STROKE_WIDTH);
                 ui.set_width(room_for_it.min(380.0));
                 ui.vertical_centered(|ui| {
