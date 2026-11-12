@@ -3,7 +3,7 @@
 //! The arena fills the whole window and everything here floats over it:
 //!
 //!   +-------------------------------------+
-//!   | settings       [P]         players  |   icon; the room and who is in it;
+//!   | settings     banner        players  |   countdown / winner; the room and who is in it;
 //!   |                                     |   its settings, for the owner, or
 //!   |                                     |   the match timer during a fight
 //!   |               arena                 |   join screen: boxes in the middle
@@ -52,8 +52,6 @@ const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
 const PROMPT_BOX_SHARE: f32 = 0.2;
 /// ...but never so small that a line of text and the footer don't fit.
 const PROMPT_BOX_MIN_HEIGHT: f32 = 110.0;
-
-const ICON_SIZE: f32 = 40.0;
 
 /// What there is to show. Filled in every frame by `net` from the server, or
 /// by `sandbox` from made-up data; the UI only reads it.
@@ -219,17 +217,14 @@ fn draw(
 
     let snapshot = match &*screen {
         Screen::Connecting(uri) => {
-            icon(&background, screen_rect);
             centred(format!("Connecting to {uri} …"));
             return Ok(());
         }
         Screen::Entering => {
-            icon(&background, screen_rect);
             centred("Entering the room…".into());
             return Ok(());
         }
         Screen::Join { known_name, error } => {
-            icon(&background, screen_rect);
             join_screen(ctx, known_name, error, &mut form, &mut actions);
             return Ok(());
         }
@@ -241,7 +236,6 @@ fn draw(
     bot_markers(&background, &replay, camera, camera_transform);
     bot_cards(&background, screen, snapshot, &replay);
     banner(&background, screen, snapshot, &replay);
-    icon(&background, screen);
     let clock = match_timer(&background, screen, &snapshot.game, &replay);
     faults(ctx, snapshot, &replay, clock);
     roster(&background, screen, snapshot, &replay);
@@ -276,40 +270,6 @@ fn draw(
         (Phase::Results, _) => status_line(ctx, false, "Next round starts in a moment."),
     }
     Ok(())
-}
-
-/// The project icon, top centre. Drawn by hand from the shapes in
-/// `assets/icon.svg`: egui can't show an SVG without an image loader, and a
-/// rounded square with a letter isn't worth shipping one to the browser.
-/// Keep it in step with the SVG if that ever changes.
-fn icon(painter: &egui::Painter, screen: egui::Rect) {
-    let rect = egui::Rect::from_center_size(
-        screen.center_top() + egui::vec2(0.0, EDGE + ICON_SIZE / 2.0),
-        egui::Vec2::splat(ICON_SIZE),
-    );
-    // Everything below is in the SVG's 64 unit square.
-    let unit = ICON_SIZE / 64.0;
-    let at = |x: f32, y: f32| rect.min + egui::vec2(x, y) * unit;
-    painter.rect_filled(rect, 14.0 * unit, theme::ICON_ORANGE);
-
-    // The "P": a stem, and a bowl that is rounded on the right only.
-    let white = egui::Color32::WHITE;
-    let weight = 4.4;
-    let stem = egui::Rect::from_min_max(at(24.4, 20.4), at(24.4 + weight, 43.2));
-    painter.rect_filled(stem, 0.0, white);
-    let bowl = egui::Rect::from_min_max(at(24.4, 20.4), at(40.4, 36.0));
-    let round = (7.8 * unit).round() as u8;
-    painter.rect_stroke(
-        bowl,
-        egui::CornerRadius {
-            nw: 0,
-            ne: round,
-            sw: 0,
-            se: round,
-        },
-        egui::Stroke::new(weight * unit, white),
-        egui::StrokeKind::Inside,
-    );
 }
 
 /// First screen, on every launch: who are you, and which room?
@@ -910,6 +870,7 @@ fn banner(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         },
         Phase::Fighting | Phase::Prompting => return,
     };
-    let at = screen.center_top() + egui::vec2(0.0, screen.height() * 0.2);
+    // Top centre, clear of the arena.
+    let at = screen.center_top() + egui::vec2(0.0, EDGE + theme::SIZE_BANNER / 2.0);
     shadowed_text(painter, at, text, theme::SIZE_BANNER, theme::TEXT);
 }

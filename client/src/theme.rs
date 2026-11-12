@@ -103,9 +103,6 @@ pub const PILL_RADIUS: u8 = 8;
 pub const TEXT_SHADOW: Color32 = Color32::from_black_alpha(200);
 pub const HP_TRACK: Color32 = Color32::from_black_alpha(160);
 
-/// `assets/icon.svg`: an orange rounded square with a white "P".
-pub const ICON_ORANGE: Color32 = Color32::from_rgb(0xd9, 0x77, 0x06);
-
 /// Space between the window edge and anything placed along it.
 pub const EDGE: f32 = 12.0;
 
