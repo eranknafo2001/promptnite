@@ -7,8 +7,7 @@ use bevy_egui::egui::{self, Color32};
 
 // The arena.
 
-/// The sky at the bottom of the screen, and the haze the building below the
-/// roof fades into.
+/// The sky at the bottom of the screen.
 /// Both sky colours share the rooftop floor's teal-blue hue, so the scene
 /// reads as one palette.
 pub const BACKGROUND: Color = Color::srgb(0.60, 0.86, 0.95);

@@ -173,7 +173,6 @@ fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> i
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
             unlit: true,
-            fog_enabled: false,
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, -DISTANCE),
@@ -211,15 +210,6 @@ fn setup(
         ArenaCamera,
         Camera3d::default(),
         camera_transform(0),
-        // Far floors of the building fade into the sky.
-        DistanceFog {
-            color: theme::BACKGROUND,
-            falloff: FogFalloff::Linear {
-                start: 30.0,
-                end: 75.0,
-            },
-            ..default()
-        },
         children![sky(&mut meshes, &mut materials)],
     ));
 
