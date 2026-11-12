@@ -8,7 +8,6 @@ use bevy_egui::egui::{self, Color32};
 // The arena.
 
 pub const BACKGROUND: Color = Color::srgb(0.07, 0.08, 0.10);
-pub const FLOOR: Color = Color::srgb(0.55, 0.56, 0.58);
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.
@@ -71,6 +70,22 @@ pub const SIZE_STATUS: f32 = 14.0;
 pub const SIZE_BOT_NAME: f32 = 14.0;
 pub const SIZE_LABEL: f32 = 13.0;
 pub const SIZE_SMALL: f32 = 12.5;
+
+/// Lexend Bold for all proportional text, egui's own fonts behind it for any
+/// glyph Lexend lacks. Compiled in, so the browser needs no extra download.
+pub fn set_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "lexend_bold".into(),
+        egui::FontData::from_static(include_bytes!("../fonts/Lexend-Bold.ttf")).into(),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "lexend_bold".into());
+    ctx.set_fonts(fonts);
+}
 
 pub fn box_frame() -> egui::Frame {
     egui::Frame::new()

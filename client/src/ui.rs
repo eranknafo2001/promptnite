@@ -27,7 +27,7 @@ use bevy_egui::{
 use promptnite_bindings::*;
 
 use crate::{
-    arena::{ArenaCamera, Replay},
+    arena::{ArenaCamera, BotView, Replay},
     theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
@@ -195,8 +195,13 @@ fn draw(
     mut actions: MessageWriter<Action>,
     replay: Res<Replay>,
     camera: Single<(&Camera, &GlobalTransform), With<ArenaCamera>>,
+    mut fonts_set: Local<bool>,
 ) -> Result {
     let ctx = &*contexts.ctx_mut()?;
+    if !*fonts_set {
+        theme::set_fonts(ctx);
+        *fonts_set = true;
+    }
     let screen_rect = ctx.viewport_rect();
     let background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
@@ -233,7 +238,8 @@ fn draw(
     let screen = screen_rect;
 
     let (camera, camera_transform) = *camera;
-    bot_labels(&background, snapshot, &replay, camera, camera_transform);
+    bot_markers(&background, &replay, camera, camera_transform);
+    bot_cards(&background, screen, snapshot, &replay);
     banner(&background, screen, snapshot, &replay);
     icon(&background, screen);
     let clock = match_timer(&background, screen, &snapshot.game, &replay);
@@ -794,40 +800,98 @@ fn shadowed_text(
     painter.text(at, egui::Align2::CENTER_CENTER, text, font, color);
 }
 
-/// Name and health bar floating above every bot.
-fn bot_labels(
+/// A down-pointing triangle in the bot's colour floating above every bot
+/// still standing.
+fn bot_markers(
     painter: &egui::Painter,
-    snapshot: &Snapshot,
     replay: &Replay,
     camera: &Camera,
     camera_transform: &GlobalTransform,
 ) {
-    for bot in &replay.bots {
+    const WIDTH: f32 = 16.0;
+    const HEIGHT: f32 = 12.0;
+
+    for bot in replay
+        .bots
+        .iter()
+        .filter(|bot| bot.action != BotAction::Dead)
+    {
         let above = bot.position + Vec3::Y * (bot.radius * 2.2);
         // The arena camera covers the whole window, so its viewport
         // coordinates are egui coordinates.
-        let Ok(at) = camera.world_to_viewport(camera_transform, above) else {
+        let Ok(tip) = camera.world_to_viewport(camera_transform, above) else {
             continue;
         };
-        let at = egui::pos2(at.x, at.y);
-        let alive = bot.action != BotAction::Dead;
+        let tip = egui::pos2(tip.x, tip.y);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                tip,
+                tip + egui::vec2(-WIDTH / 2.0, -HEIGHT),
+                tip + egui::vec2(WIDTH / 2.0, -HEIGHT),
+            ],
+            fill_of(bot),
+            egui::Stroke::new(1.5, theme::TEXT_SHADOW),
+        ));
+    }
+}
 
+fn fill_of(bot: &BotView) -> egui::Color32 {
+    if bot.action == BotAction::Dead {
+        theme::TEXT_DEAD
+    } else {
+        let [r, g, b] = bot_color(bot.id);
+        egui::Color32::from_rgb(r, g, b)
+    }
+}
+
+/// One card per bot in the match down the left side, vertically centred:
+/// colour dot and name, health bar underneath.
+///
+/// Painted directly, like the roster, so the cards don't jump a frame when
+/// a name changes length.
+fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
+    const WIDTH: f32 = 180.0;
+    const HEIGHT: f32 = 44.0;
+    const GAP: f32 = 8.0;
+    const DOT: f32 = 10.0;
+    const PADDING: egui::Vec2 = egui::vec2(10.0, 8.0);
+
+    let count = replay.bots.len() as f32;
+    let mut top = screen.center().y - (count * (HEIGHT + GAP) - GAP) / 2.0;
+    for bot in &replay.bots {
+        let card = egui::Rect::from_min_size(
+            egui::pos2(screen.left() + EDGE, top),
+            egui::vec2(WIDTH, HEIGHT),
+        );
+        top += HEIGHT + GAP;
+        painter.rect_filled(card, theme::PILL_RADIUS, theme::PILL_FILL);
+
+        let inner = card.shrink2(PADDING);
+        let alive = bot.action != BotAction::Dead;
+        let name_y = inner.top() + 7.0;
+        painter.circle_filled(
+            egui::pos2(inner.left() + DOT / 2.0, name_y),
+            DOT / 2.0,
+            fill_of(bot),
+        );
         painter.text(
-            at - egui::vec2(0.0, 8.0),
-            egui::Align2::CENTER_BOTTOM,
+            egui::pos2(inner.left() + DOT + 6.0, name_y),
+            egui::Align2::LEFT_CENTER,
             snapshot.name_of(bot.id),
             egui::FontId::proportional(theme::SIZE_BOT_NAME),
             if alive { theme::TEXT } else { theme::TEXT_DEAD },
         );
 
-        let bar = egui::Rect::from_center_size(at, egui::vec2(46.0, 5.0));
-        painter.rect_filled(bar, 2.0, theme::HP_TRACK);
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), inner.bottom() - 6.0),
+            inner.right_bottom(),
+        );
+        painter.rect_filled(bar, 3.0, theme::HP_TRACK);
         let health = (bot.hp as f32 / snapshot.game.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            let [r, g, b] = bot_color(bot.id);
             let filled =
                 egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height()));
-            painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(r, g, b));
+            painter.rect_filled(filled, 3.0, fill_of(bot));
         }
     }
 }
