@@ -76,17 +76,38 @@ const STRATEGY_VIEW: View = View {
     focus: Vec3::new(0.0, 0.0, 4.5),
 };
 
-/// `view` from behind edge `edge`, as world (eye, focus).
+/// Writing a prompt in a narrow window (`ui::COMPACT_WIDTH`): no column to
+/// make room for, so no pan, and further away: the arena only has the gap
+/// between the players' list and the prompt sheet to show in.
+const COMPACT_STRATEGY_VIEW: View = View {
+    eye: Vec3::new(14.0, 49.0, 0.0),
+    focus: Vec3::ZERO,
+};
+
+/// The narrowest window (width over height) both views were composed for.
+/// The camera's field of view is vertical, so anything narrower would cut
+/// the arena's sides off.
+const COMPOSED_ASPECT: f32 = 1.25;
+
+/// `view` from behind edge `edge`, as world (eye, focus), for a window of
+/// `size`.
 /// The edge table must match `edge_direction` in `sim/src/rules.rs`.
-fn place(view: &View, edge: u32) -> (Vec3, Vec3) {
+fn place(view: &View, edge: u32, size: Vec2) -> (Vec3, Vec3) {
+    let (mut eye, focus) = (view.eye, view.focus);
+    // A narrow window (a phone held upright): back off until the arena
+    // fits across it again.
+    let aspect = size.x / size.y.max(1.0);
+    if aspect < COMPOSED_ASPECT {
+        eye = focus + (eye - focus) * (COMPOSED_ASPECT / aspect);
+    }
     let outward = outward(edge);
     let right = Vec3::Y.cross(outward);
     let world = |v: Vec3| outward * v.x + Vec3::Y * v.y + right * v.z;
-    (world(view.eye), world(view.focus))
+    (world(eye), world(focus))
 }
 
-fn camera_transform(edge: u32) -> Transform {
-    let (eye, focus) = place(&FIGHT_VIEW, edge);
+fn camera_transform(edge: u32, size: Vec2) -> Transform {
+    let (eye, focus) = place(&FIGHT_VIEW, edge, size);
     Transform::from_translation(eye).looking_at(focus, Vec3::Y)
 }
 
@@ -455,7 +476,8 @@ fn setup(
     commands.spawn((
         ArenaCamera,
         Camera3d::default(),
-        camera_transform(0),
+        // Any landscape size: `point_of_view` takes over from the first frame.
+        camera_transform(0, Vec2::new(1280.0, 720.0)),
         theme::color_grading(),
         children![sky(&mut meshes, &mut materials)],
     ));
@@ -627,13 +649,19 @@ pub fn point_of_view(
     time: Res<Time>,
     screen: Res<Screen>,
     mut spring: ResMut<CameraSpring>,
+    window: Single<&Window>,
     mut camera: Single<&mut Transform, With<ArenaCamera>>,
 ) {
     // Stiffness, and damping just under critical for the overshoot.
     const STIFFNESS: f32 = 70.0;
     const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
 
+    let size = window.size();
     let Screen::Room(snapshot) = &*screen else {
+        // Before the first room the camera only has to fit the window.
+        if spring.at.is_none() {
+            **camera = camera_transform(0, size);
+        }
         return;
     };
     // Only while the prompt box is open, as in `ui::draw`: nothing sent
@@ -643,8 +671,12 @@ pub fn point_of_view(
             snapshot.submission_of(snapshot.me.id).map(|s| s.status),
             None | Some(SubmissionStatus::Failed)
         );
-    let view = if writing { &STRATEGY_VIEW } else { &FIGHT_VIEW };
-    let (eye, focus) = place(view, snapshot.me.edge);
+    let view = match (writing, size.x < crate::ui::COMPACT_WIDTH) {
+        (true, true) => &COMPACT_STRATEGY_VIEW,
+        (true, false) => &STRATEGY_VIEW,
+        (false, _) => &FIGHT_VIEW,
+    };
+    let (eye, focus) = place(view, snapshot.me.edge, size);
     let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
     // A long frame (a hitch, a hidden tab) must not fling the camera.
     let dt = time.delta_secs().min(1.0 / 30.0);
