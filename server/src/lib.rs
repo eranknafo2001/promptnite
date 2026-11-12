@@ -4,7 +4,8 @@
 //! See docs/GAME_DESIGN.md for the big picture.
 //!
 //! Players meet in rooms: everyone who enters the same room id plays together,
-//! and whoever created the room owns it and picks its settings.
+//! and whoever created the room owns it and picks its settings. A room holds
+//! at most four players, one per edge of the arena.
 //!
 //! Round loop (each room runs its own):
 //!
@@ -91,6 +92,11 @@ pub struct Player {
     /// In the app right now, with a room picked. A player picks a room every
     /// time they open the app, so this is set by `join`, not by connecting.
     online: bool,
+    /// Which edge of the arena is theirs (`0..rules::MAX_BOTS`): their bot
+    /// starts there and their camera sits behind it. Handed out by `join`;
+    /// no two online players of a room share one.
+    #[default(0)]
+    edge: u32,
 }
 
 #[derive(SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,6 +338,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
                 name: name.clone(),
                 room_id: NO_ROOM,
                 online: false,
+                edge: 0,
             })
         });
 
@@ -374,6 +381,27 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         }),
     };
 
+    // One edge each. Somebody coming back keeps theirs if it is still free.
+    let taken: Vec<u32> = ctx
+        .db
+        .player()
+        .room_id()
+        .filter(room.id)
+        .filter(|other| other.online && other.id != player.id)
+        .map(|other| other.edge)
+        .collect();
+    let free = |edge: &u32| !taken.contains(edge);
+    let Some(edge) = Some(player.edge)
+        .filter(|edge| player.room_id == room.id && free(edge))
+        .or_else(|| (0..rules::MAX_BOTS as u32).find(free))
+    else {
+        return Err(format!(
+            "Room \"{}\" is full ({} players). Try another room id.",
+            room.code,
+            rules::MAX_BOTS
+        ));
+    };
+
     let left = player.room_id;
     if left != room.id {
         // A script belongs to a round of the room it was written in.
@@ -383,6 +411,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         name,
         room_id: room.id,
         online: true,
+        edge,
         ..player
     });
     if left != room.id {
@@ -714,14 +743,22 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
         };
         bots.push(sim::BotSpec {
             id: player.id,
+            edge: player.edge,
             script: script.script,
         });
     }
     // Stable spawn order regardless of table iteration order.
     bots.sort_by_key(|bot| bot.id);
-    if room.house_bot && !bots.is_empty() {
+    // The house bot takes an edge nobody is using; with four players there is
+    // none left and it sits the match out.
+    let free_edge = (0..rules::MAX_BOTS as u32).find(|edge| bots.iter().all(|b| b.edge != *edge));
+    if room.house_bot
+        && !bots.is_empty()
+        && let Some(edge) = free_edge
+    {
         bots.push(sim::BotSpec {
             id: HOUSE_BOT_ID,
+            edge,
             script: sim::EXAMPLE_SCRIPT.to_string(),
         });
     }

@@ -12,6 +12,7 @@ pub struct Player {
     pub name: String,
     pub room_id: u32,
     pub online: bool,
+    pub edge: u32,
 }
 
 impl __sdk::InModule for Player {
@@ -27,6 +28,7 @@ pub struct PlayerCols {
     pub name: __sdk::__query_builder::Col<Player, String>,
     pub room_id: __sdk::__query_builder::Col<Player, u32>,
     pub online: __sdk::__query_builder::Col<Player, bool>,
+    pub edge: __sdk::__query_builder::Col<Player, u32>,
 }
 
 impl __sdk::__query_builder::HasCols for Player {
@@ -38,6 +40,7 @@ impl __sdk::__query_builder::HasCols for Player {
             name: __sdk::__query_builder::Col::new(table_name, "name"),
             room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             online: __sdk::__query_builder::Col::new(table_name, "online"),
+            edge: __sdk::__query_builder::Col::new(table_name, "edge"),
         }
     }
 }

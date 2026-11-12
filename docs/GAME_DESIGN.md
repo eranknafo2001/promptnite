@@ -13,12 +13,17 @@ Every time a player opens the app they enter a name and a **room id**.
 Everyone who enters the same id is in the same room, and each room runs its
 own round loop. Ids are not case sensitive.
 
+A room holds at most **four players**, one per edge of the arena. A fifth is
+turned away until somebody leaves. Each player gets an edge when they enter:
+their bot starts there, and they watch the fight from behind it.
+
 The first player in creates the room and is its **owner**. The owner sets:
 
 - **Match length**: the time limit of a fight, 60 seconds unless changed
   (the server accepts 15 to 120).
 - **House bot**: whether the built-in reference bot fights in every match.
-  On by default, so a room can be played alone.
+  On by default, so a room can be played alone. It takes an edge no player
+  is using, so with four players it sits out.
 
 Changes apply from the next match. The owner stays the owner while anybody is
 in the room, even while they are away themselves. A room everybody has left
@@ -70,8 +75,9 @@ Globals persist between ticks, so a script can remember things.
 
 ### Rules (all in `sim/src/rules.rs`)
 
-- Square arena, 20 × 20 units. Bots are spheres of radius 0.5, spawn on a
-  circle, are solid (cannot overlap) and cannot leave the arena.
+- Square arena, 20 × 20 units, at most four bots. Bots are spheres of radius
+  0.5, start at the middle of their own edge (1.5 units in from the wall),
+  are solid (cannot overlap) and cannot leave the arena.
 - 10 ticks per second. The time limit is the room's match length.
 - 100 hp, a punch does 10 damage within 1.5 units, then a 5 tick cooldown.
 - Walking speed 3 units per second.
@@ -84,12 +90,14 @@ Globals persist between ticks, so a script can remember things.
 
 ## Screen layout
 
-The arena fills the whole window, seen from a tilted camera with a sphere per
-bot. Everything else floats over it; there are no panels.
+The arena fills the whole window, seen from a tilted camera behind the
+player's own edge, with a sphere per bot. Everything else floats over it;
+there are no panels.
 
 - **Icon**: top centre, always.
 - **Join screen**: on every launch, two boxes in the middle of the window ask
-  for the player's name and the room id. Enter joins.
+  for the player's name and the room id. Enter joins. A full room says so
+  under the boxes.
 - **Prompt box**: once per round, the bottom 20% of the window is a multi-line
   text box. Enter adds a line, Command+Enter (or Ctrl+Enter) sends the prompt.
   Its footer shows the round. If the agent failed, the reason appears just

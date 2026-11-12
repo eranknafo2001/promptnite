@@ -72,7 +72,7 @@ A bot does exactly one of these per tick: it cannot walk and attack in the same 
 - \`state.tick\`: current step, starting at 1.
 - \`state.me\`: \`{ id, x, y, hp, cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again.
 - \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
-- \`state.arena\`: \`{ half_size }\`. The arena spans -half_size..half_size on both axes and bots cannot leave it.
+- \`state.arena\`: \`{ half_size }\`. The arena spans -half_size..half_size on both axes and bots cannot leave it. Up to four bots fight, each starting at the middle of a different edge.
 - \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp }\`. \`walk_speed\` is in units per second.
 
 The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the most hp wins.

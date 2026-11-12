@@ -8,6 +8,8 @@
 //! we only subscribe to our own player row; once the server has put us in a
 //! room we subscribe to that room's rows and nothing else.
 
+use std::sync::{Arc, Mutex};
+
 use bevy::prelude::*;
 use bevy_stdb::prelude::*;
 use promptnite_bindings::{sdk::Identity, *};
@@ -50,12 +52,18 @@ pub struct Session {
     joined: Option<(String, String)>,
     /// The server hasn't been told yet (or not since the last reconnect).
     unsent: bool,
+    /// Why the server turned the last join down (the room is full, ...).
+    pub error: Option<String>,
+    /// Filled in by the `join` reducer's callback, which runs outside Bevy's
+    /// systems; `send_join` moves it into `error`.
+    refusal: Arc<Mutex<Option<String>>>,
 }
 
 impl Session {
     pub fn join(&mut self, name: String, room: String) {
         self.joined = Some((name, room));
         self.unsent = true;
+        self.error = None;
     }
 
     pub fn has_joined(&self) -> bool {
@@ -133,6 +141,14 @@ fn on_connected(
 }
 
 fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
+    let refused = session.refusal.lock().unwrap().take();
+    if let Some(error) = refused {
+        // Back to the join form, with the reason.
+        session.joined = None;
+        session.unsent = false;
+        session.error = Some(error);
+        return;
+    }
     if !session.unsent {
         return;
     }
@@ -140,7 +156,13 @@ fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {
         return;
     };
     if let Some((name, room)) = session.joined.clone() {
-        match conn.reducers().join(name, room) {
+        let refusal = session.refusal.clone();
+        let sent = conn.reducers().join_then(name, room, move |_, result| {
+            if let Ok(Err(error)) = result {
+                *refusal.lock().unwrap() = Some(error);
+            }
+        });
+        match sent {
             Ok(()) => session.unsent = false,
             Err(err) => warn!("could not join: {err}"),
         }
