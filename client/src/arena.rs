@@ -155,8 +155,8 @@ fn spawn_building(
 }
 
 /// The sky: a backdrop hung far behind everything else, attached to the
-/// camera so it always fills the view, fading from light blue at the bottom
-/// of the screen to deep blue at the top.
+/// camera so it always fills the view, fading from deep blue at the bottom
+/// of the screen to light blue at the top.
 fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> impl Bundle {
     // At 500 m a 45° view is about 415 m tall. Just a little taller, so the
     // ends of the fade land at the screen edges with room for the sway, and
