@@ -13,11 +13,18 @@
 #   make publish AGENT_URL=https://promptnite-agent.<you>.workers.dev
 #
 # AGENT_SECRET is the shared password between the module and the agent worker.
+#
+# Logs stay local unless told otherwise (see "Logging" in the README):
+#
+#   make publish AXIOM_TOKEN=xaat-...                     the module's logs
+#   make client  LOG_URL=http://127.0.0.1:8787/logs       the desktop client's
 
 DB           ?= promptnite
 STDB_ADDR    ?= 127.0.0.1:3210
 AGENT_SECRET ?= dev-secret
 AGENT_URL    ?=
+AXIOM_TOKEN  ?=
+LOG_URL      ?=
 
 .PHONY: server publish bindings worker worker-deploy client sandbox web web-release test
 
@@ -25,7 +32,7 @@ server:
 	spacetime start --listen-addr $(STDB_ADDR)
 
 publish:
-	AGENT_URL=$(AGENT_URL) AGENT_SECRET=$(AGENT_SECRET) spacetime publish $(DB) --yes
+	AGENT_URL=$(AGENT_URL) AGENT_SECRET=$(AGENT_SECRET) AXIOM_TOKEN=$(AXIOM_TOKEN) spacetime publish $(DB) --yes
 
 # Regenerate bindings/ after changing tables or reducers in server/. The
 # generator formats in its own style; `cargo fmt` brings it back to ours, which
@@ -42,7 +49,7 @@ worker-deploy:
 	cd worker && npm run deploy
 
 client:
-	PROMPTNITE_URI=http://$(STDB_ADDR) PROMPTNITE_DB=$(DB) cargo run -p promptnite
+	PROMPTNITE_URI=http://$(STDB_ADDR) PROMPTNITE_DB=$(DB) PROMPTNITE_LOG_URL=$(LOG_URL) cargo run -p promptnite
 
 sandbox:
 	cargo run -p promptnite -- --sandbox

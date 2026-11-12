@@ -9,38 +9,45 @@
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
 //!   theme.rs  colours, type sizes and boxes: the look in one place
 //!   sandbox.rs  every screen with made-up data and no server (`--sandbox`)
+//!   logs.rs   sends warnings, errors and panics to the central log
 
 mod arena;
+mod logs;
 mod net;
 mod sandbox;
 mod theme;
 mod ui;
 
-use bevy::prelude::*;
+use bevy::{log::LogPlugin, prelude::*};
 
 fn main() {
     let sandbox = sandbox::enabled();
     let mut app = App::new();
     app.insert_resource(ClearColor(theme::BACKGROUND))
         .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: if sandbox {
-                        "promptnite sandbox"
-                    } else {
-                        "promptnite"
-                    }
-                    .into(),
-                    // Browser: render into the canvas from index.html and follow
-                    // its size. Both settings are ignored on desktop.
-                    canvas: Some("#game".into()),
-                    fit_canvas_to_parent: true,
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: if sandbox {
+                            "promptnite sandbox"
+                        } else {
+                            "promptnite"
+                        }
+                        .into(),
+                        // Browser: render into the canvas from index.html and
+                        // follow its size. Both settings are ignored on desktop.
+                        canvas: Some("#game".into()),
+                        fit_canvas_to_parent: true,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(LogPlugin {
+                    custom_layer: logs::layer,
                     ..default()
                 }),
-                ..default()
-            }),
         )
-        .add_plugins((arena::plugin, ui::plugin));
+        .add_plugins((arena::plugin, ui::plugin, logs::plugin));
     if sandbox {
         app.add_plugins(sandbox::plugin);
     } else {

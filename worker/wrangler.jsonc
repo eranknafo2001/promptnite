@@ -9,10 +9,16 @@
   "vars": {
     "SPACETIMEDB_URI": "http://127.0.0.1:3210",
     "SPACETIMEDB_DB": "promptnite"
-  }
+  },
+  // `POST /logs` takes logs from game clients, which anyone can call. Each
+  // address gets this many batches a minute; a client sends one every few
+  // seconds at most.
+  "ratelimits": [{ "name": "LOG_LIMIT", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } }]
   // Secrets are not listed here. Locally they come from .dev.vars; for a
   // deployed Worker use `wrangler secret put <NAME>`:
   //   AGENT_SECRET                         same value the module was published with
   //   ANTHROPIC_API_KEY or OPENAI_API_KEY
-  // Optional plain vars: PROMPTNITE_PROVIDER, PROMPTNITE_MODEL, OPENAI_BASE_URL
+  //   AXIOM_TOKEN                          optional: ship logs to Axiom
+  // Optional plain vars: PROMPTNITE_PROVIDER, PROMPTNITE_MODEL, OPENAI_BASE_URL,
+  // AXIOM_DATASET, AXIOM_DOMAIN
 }

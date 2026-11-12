@@ -139,6 +139,10 @@ read scripts.
 | `client/` | Bevy client, desktop and browser. |
 | `worker/` | The agent: a Cloudflare Worker (TypeScript) that turns a prompt into Lua with a model (Claude or any OpenAI-format API). |
 
+The module, the worker and the client all log to one Axiom dataset (see
+"Logging" in the README). The module and the worker send their own events; the
+client's go through the worker, which holds the token.
+
 Decisions worth knowing about:
 
 - **The server simulates the whole match in one go.** When the last script

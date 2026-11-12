@@ -75,7 +75,7 @@ impl Session {
 }
 
 /// Our own player row, if we ever played on this identity.
-fn me(conn: &Conn) -> Option<Player> {
+pub fn me(conn: &Conn) -> Option<Player> {
     let identity = conn.try_identity()?;
     // After signing in as somebody else the cache may hold the old row for a
     // moment.

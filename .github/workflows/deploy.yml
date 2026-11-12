@@ -92,14 +92,18 @@ jobs:
           PROMPTNITE_PROVIDER: ${{ vars.PROMPTNITE_PROVIDER }}
           PROMPTNITE_MODEL: ${{ vars.PROMPTNITE_MODEL }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
+          AXIOM_DATASET: ${{ vars.AXIOM_DATASET }}
+          AXIOM_DOMAIN: ${{ vars.AXIOM_DOMAIN }}
         run: |
           # The Worker's secrets, leaving out the ones that aren't set.
           secrets_file="$RUNNER_TEMP/worker-secrets.json"
-          jq -n '{AGENT_SECRET: env.AGENT_SECRET, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, OPENAI_API_KEY: env.OPENAI_API_KEY}
+          jq -n '{AGENT_SECRET: env.AGENT_SECRET, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, OPENAI_API_KEY: env.OPENAI_API_KEY,
+                  AXIOM_TOKEN: env.AXIOM_TOKEN}
                  | with_entries(select(.value != null and .value != ""))' > "$secrets_file"
 
           args=(--var "SPACETIMEDB_URI:$SPACETIMEDB_URI" --var "SPACETIMEDB_DB:$SPACETIMEDB_DB")
-          for name in PROMPTNITE_PROVIDER PROMPTNITE_MODEL OPENAI_BASE_URL; do
+          for name in PROMPTNITE_PROVIDER PROMPTNITE_MODEL OPENAI_BASE_URL AXIOM_DATASET AXIOM_DOMAIN; do
             if [ -n "${!name}" ]; then args+=(--var "$name:${!name}"); fi
           done
 
@@ -141,6 +145,10 @@ jobs:
           SPACETIMEDB_TOKEN: ${{ secrets.SPACETIMEDB_TOKEN }}
           AGENT_URL: ${{ needs.worker.outputs.url }}
           AGENT_SECRET: ${{ secrets.AGENT_SECRET }}
+          # Optional: without the token the module keeps its logs to itself.
+          AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
+          AXIOM_DATASET: ${{ vars.AXIOM_DATASET }}
+          AXIOM_DOMAIN: ${{ vars.AXIOM_DOMAIN }}
         run: |
           spacetime login --token "$SPACETIMEDB_TOKEN"
           # No --delete-data: a schema change that would lose data fails here
@@ -152,7 +160,7 @@ jobs:
   web:
     name: Upload browser client to itch.io
     # After the module, so the client never runs ahead of the schema it expects.
-    needs: module
+    needs: [worker, module]
     runs-on: ubuntu-latest
     steps:
       # Built by the CI job with the hosted database as its default.
@@ -160,6 +168,21 @@ jobs:
         with:
           name: web-dist
           path: dist
+      # The build was made before the worker's address was known, so the page
+      # is told afterwards. See client/src/logs.rs.
+      - name: Tell the client where to send its logs
+        env:
+          LOGGING: ${{ secrets.AXIOM_TOKEN != '' }}
+          LOG_URL: ${{ needs.worker.outputs.url }}/logs
+        run: |
+          # Without a token the worker has nowhere to pass them on to.
+          if [ "$LOGGING" != true ]; then exit 0; fi
+          # The whole tag is replaced, however the build wrote it.
+          sed -i -E "s|<meta name=\"?promptnite-log-url\"?[^>]*>|<meta name=\"promptnite-log-url\" content=\"$LOG_URL\">|" dist/index.html
+          if ! grep -qF "content=\"$LOG_URL\"" dist/index.html; then
+            echo "::error::dist/index.html has no promptnite-log-url meta tag to fill in."
+            exit 1
+          fi
       - name: Install butler
         run: |
           curl -fsSL -o "$RUNNER_TEMP/butler.zip" https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default

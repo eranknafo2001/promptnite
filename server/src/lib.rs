@@ -23,6 +23,9 @@
 //! an invalid script back to the worker with the error for another try, and
 //! only marks the player ready once a script passed.
 //!
+//! What happens is logged with `emit`, which also ships it to Axiom when a
+//! token is configured; see "Logging" below.
+//!
 //! What clients may see: every table is private. Clients subscribe to the
 //! views at the bottom of this file, which show a caller the room they are in
 //! and nothing else, and hold a match back until its fight starts.
@@ -32,8 +35,9 @@ mod entropy;
 
 use std::time::Duration;
 
+use log::Level;
 use promptnite_sim::{self as sim, rules};
-use serde_json::json;
+use serde_json::{Value, json};
 use spacetimedb::{
     Identity, ProcedureContext, ReducerContext, ScheduleAt, SpacetimeType, Table, TimeDuration,
     Timestamp, ViewContext,
@@ -61,6 +65,17 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_millis(450);
 const MAX_SCRIPT_CHARS: usize = 20_000;
 const MAX_ERROR_CHARS: usize = 300;
 
+/// Log events wait this long for company, so a burst goes out as one request.
+const LOG_SHIP_DELAY: Duration = Duration::from_secs(2);
+/// How long to wait before trying again when Axiom could not be reached.
+const LOG_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Events per request. A request has to finish within the 500 ms HTTP limit.
+const LOG_BATCH: usize = 500;
+/// With this many events waiting (Axiom is down), new ones are not kept.
+const MAX_PENDING_LOGS: u64 = 5_000;
+const AXIOM_TIMEOUT: Duration = Duration::from_millis(450);
+const DEFAULT_AXIOM_DOMAIN: &str = "us-east-1.aws.edge.axiom.co";
+const DEFAULT_AXIOM_DATASET: &str = "promptnite";
 /// A player may send a prompt this often. Each one replaces the last and
 /// starts a model call.
 const PROMPT_INTERVAL: Duration = Duration::from_secs(1);
@@ -92,6 +107,13 @@ pub struct Env {
     /// Shared secret: sent to the worker with each job, and required back
     /// from it in `deliver_script` / `fail_job`.
     pub AGENT_SECRET: Option<String>,
+    /// An Axiom API token that may ingest into the dataset. When unset, log
+    /// events only go to the module's own log (`spacetime logs`).
+    pub AXIOM_TOKEN: Option<String>,
+    /// Defaults to `promptnite`.
+    pub AXIOM_DATASET: Option<String>,
+    /// The dataset's edge deployment. Defaults to Axiom's US one.
+    pub AXIOM_DOMAIN: Option<String>,
 }
 
 // Tables -------------------------------------------------------------------
@@ -306,6 +328,29 @@ pub struct MatchFault {
     message: String,
 }
 
+/// Outbox: log events on their way to Axiom. Private.
+#[table(accessor = log_event)]
+pub struct LogEvent {
+    #[primary_key]
+    #[auto_inc]
+    id: u64,
+    time: Timestamp,
+    /// `error`, `warn`, `info`, ...
+    level: String,
+    message: String,
+    /// A JSON object: the ids and numbers that go with the message.
+    fields: String,
+}
+
+/// A pending run of `ship_logs`. There is one while events are waiting.
+#[table(accessor = log_shipment, scheduled(ship_logs))]
+pub struct LogShipment {
+    #[primary_key]
+    #[auto_inc]
+    scheduled_id: u64,
+    scheduled_at: ScheduleAt,
+}
+
 /// When a player last sent a prompt. Private.
 #[table(accessor = prompt_limit)]
 pub struct PromptLimit {
@@ -347,6 +392,14 @@ pub struct PhaseTimer {
 pub fn client_disconnected(ctx: &ReducerContext) {
     if let Some(player) = ctx.db.player().identity().find(ctx.sender()) {
         let room_id = player.room_id;
+        if player.online {
+            emit(
+                ctx,
+                Level::Info,
+                "player left",
+                json!({ "player_id": player.id, "room_id": room_id }),
+            );
+        }
         ctx.db.player().identity().update(Player {
             online: false,
             ..player
@@ -451,6 +504,19 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         ));
     };
 
+    emit(
+        ctx,
+        Level::Info,
+        "player joined",
+        json!({
+            "player_id": player.id,
+            "identity": ctx.sender().to_string(),
+            "name": name,
+            "room_id": room.id,
+            "room": room.code,
+            "edge": edge,
+        }),
+    );
     let left = player.room_id;
     if left != room.id {
         // A script belongs to a round of the room it was written in.
@@ -491,6 +557,12 @@ pub fn set_room_settings(
         ));
     }
     let room_id = room.id;
+    emit(
+        ctx,
+        Level::Info,
+        "room settings changed",
+        json!({ "player_id": player.id, "room_id": room_id, "match_secs": match_secs, "house_bot": house_bot }),
+    );
     ctx.db.room().id().update(Room {
         match_secs,
         house_bot,
@@ -564,6 +636,19 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         prompt,
         attempt: 1,
     });
+    // The prompt itself is the player's and stays out of the logs.
+    emit(
+        ctx,
+        Level::Info,
+        "prompt submitted",
+        json!({
+            "job_id": job.id,
+            "player_id": player.id,
+            "room_id": room.id,
+            "round": room.round,
+            "prompt_chars": job.prompt.chars().count(),
+        }),
+    );
     call_agent(ctx, &job, String::new(), String::new());
     Ok(())
 }
@@ -612,9 +697,14 @@ pub fn notify_agent(ctx: &mut ProcedureContext, call: AgentCall) {
         },
     };
     if let Some(problem) = problem {
-        log::error!("job {}: agent worker unreachable: {problem}", call.job_id);
         let job_id = call.job_id;
         ctx.with_tx(|tx| {
+            emit(
+                tx,
+                Level::Error,
+                "agent worker unreachable",
+                json!({ "job_id": job_id, "player_id": call.player_id, "problem": problem }),
+            );
             if let Some(job) = tx.db.agent_job().id().find(job_id) {
                 fail(tx, job, "Could not reach the agent. Try again.".into());
             }
@@ -646,6 +736,17 @@ pub fn deliver_script(
     };
     match verdict {
         Ok(()) => {
+            emit(
+                ctx,
+                Level::Info,
+                "script accepted",
+                json!({
+                    "job_id": job.id,
+                    "player_id": job.player_id,
+                    "attempt": job.attempt,
+                    "script_chars": script.chars().count(),
+                }),
+            );
             ctx.db.agent_job().id().delete(job.id);
             accept_script(ctx, job.player_id, script)
         }
@@ -654,7 +755,17 @@ pub fn deliver_script(
                 fail(ctx, job, BUSY.into());
                 return Ok(());
             }
-            log::info!("job {}: script rejected, asking again: {error}", job.id);
+            emit(
+                ctx,
+                Level::Warn,
+                "script rejected, asking again",
+                json!({
+                    "job_id": job.id,
+                    "player_id": job.player_id,
+                    "attempt": job.attempt,
+                    "error": error,
+                }),
+            );
             let job = ctx.db.agent_job().id().update(AgentJob {
                 attempt: job.attempt + 1,
                 ..job
@@ -798,6 +909,17 @@ fn accept_script(ctx: &ReducerContext, player_id: u32, script: String) -> Result
 }
 
 fn fail(ctx: &ReducerContext, job: AgentJob, error: String) {
+    emit(
+        ctx,
+        Level::Warn,
+        "job failed",
+        json!({
+            "job_id": job.id,
+            "player_id": job.player_id,
+            "attempt": job.attempt,
+            "error": error,
+        }),
+    );
     ctx.db.agent_job().id().delete(job.id);
     set_submission(ctx, job.player_id, SubmissionStatus::Failed, error);
 }
@@ -889,7 +1011,20 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
                 .collect(),
         });
     }
+    let faults = outcome.faults.len();
     for fault in outcome.faults {
+        emit(
+            ctx,
+            Level::Warn,
+            "bot script fault",
+            json!({
+                "room_id": room_id,
+                "round": room.round,
+                "player_id": fault.bot_id,
+                "tick": fault.tick,
+                "error": fault.message,
+            }),
+        );
         ctx.db.match_fault().insert(MatchFault {
             id: 0, // auto_inc
             room_id,
@@ -900,13 +1035,19 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
     }
 
     let match_ticks = outcome.frames.last().map_or(0, |frame| frame.tick);
-    log::info!(
-        "room {:?} round {}: {} bots, {} ticks, winner {:?}",
-        room.code,
-        room.round,
-        bots.len(),
-        match_ticks,
-        outcome.winner
+    emit(
+        ctx,
+        Level::Info,
+        "match simulated",
+        json!({
+            "room_id": room_id,
+            "room": room.code,
+            "round": room.round,
+            "bots": bots.len(),
+            "ticks": match_ticks,
+            "winner": outcome.winner,
+            "faults": faults,
+        }),
     );
 
     let round = room.round;
@@ -996,6 +1137,143 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
         Phase::Countdown => {}
     }
     Ok(())
+}
+
+// Logging ------------------------------------------------------------------
+//
+// The module, the agent worker and the game client log to one Axiom dataset
+// with the same core fields (`source`, `level`, `message`, plus ids such as
+// `job_id`, `room_id` and `player_id`), so one query can follow a job or a
+// room across all three. The worker's half is in worker/src/log.ts.
+//
+// Reducers can't do HTTP, so `emit` writes to an outbox table and the
+// `ship_logs` procedure posts it to Axiom a moment later.
+//
+// One thing this cannot do: when a reducer fails or panics, its transaction is
+// rolled back and the events it emitted go with it. Those only show up in the
+// module's own log.
+
+/// Log something that happened. `fields` is a JSON object.
+fn emit(ctx: &ReducerContext, level: Level, message: &str, fields: Value) {
+    log::log!(level, "{message} {fields}");
+    if ctx.env.AXIOM_TOKEN().is_none_or(|token| token.is_empty())
+        || ctx.db.log_event().count() >= MAX_PENDING_LOGS
+    {
+        return;
+    }
+    ctx.db.log_event().insert(LogEvent {
+        id: 0, // auto_inc
+        time: ctx.timestamp,
+        level: level.as_str().to_lowercase(),
+        message: message.to_string(),
+        fields: fields.to_string(),
+    });
+    if ctx.db.log_shipment().count() == 0 {
+        ship_logs_at(ctx, ctx.timestamp + LOG_SHIP_DELAY);
+    }
+}
+
+fn ship_logs_at(ctx: &ReducerContext, at: Timestamp) {
+    ctx.db.log_shipment().insert(LogShipment {
+        scheduled_id: 0,
+        scheduled_at: ScheduleAt::Time(at),
+    });
+}
+
+/// Posts waiting log events to Axiom. Runs from the `log_shipment` schedule.
+#[procedure]
+pub fn ship_logs(ctx: &mut ProcedureContext, shipment: LogShipment) {
+    // Scheduled procedures are callable by anyone unless we check.
+    if ctx.sender() != ctx.database_identity() {
+        return;
+    }
+    let token = ctx.env.AXIOM_TOKEN().unwrap_or_default();
+    let domain = ctx
+        .env
+        .AXIOM_DOMAIN()
+        .filter(|domain| !domain.is_empty())
+        .unwrap_or_else(|| DEFAULT_AXIOM_DOMAIN.into());
+    let dataset = ctx
+        .env
+        .AXIOM_DATASET()
+        .filter(|dataset| !dataset.is_empty())
+        .unwrap_or_else(|| DEFAULT_AXIOM_DATASET.into());
+
+    let batch = ctx.with_tx(|tx| {
+        let mut events: Vec<LogEvent> = tx.db.log_event().iter().collect();
+        events.sort_by_key(|event| event.id);
+        events.truncate(LOG_BATCH);
+        events
+    });
+    let body: Vec<Value> = batch
+        .iter()
+        .map(|event| {
+            let mut object = match serde_json::from_str(&event.fields) {
+                Ok(Value::Object(fields)) => fields,
+                _ => Default::default(),
+            };
+            if let Ok(time) = event.time.to_rfc3339() {
+                object.insert("_time".into(), time.into());
+            }
+            object.insert("source".into(), "module".into());
+            object.insert("level".into(), event.level.clone().into());
+            object.insert("message".into(), event.message.clone().into());
+            Value::Object(object)
+        })
+        .collect();
+
+    // Keep the events only when another try could work. Axiom answers 4xx for
+    // a bad token or dataset, and repeating that would fill the outbox.
+    let mut keep = false;
+    if !batch.is_empty() && !token.is_empty() {
+        let request = Request::builder()
+            .uri(format!("https://{domain}/v1/ingest/{dataset}"))
+            .method("POST")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .extension(Timeout::from(TimeDuration::from(AXIOM_TIMEOUT)))
+            .body(Value::Array(body).to_string());
+        // Plain `log`, not `emit`: these are about the outbox itself.
+        match request.map(|request| ctx.http.send(request)) {
+            Ok(Ok(response)) if response.status().is_success() => {}
+            Ok(Ok(response)) if response.status().is_client_error() => log::error!(
+                "Axiom refused {} log events ({}): {}",
+                batch.len(),
+                response.status(),
+                response.into_body().into_string_lossy()
+            ),
+            Ok(Ok(response)) => {
+                log::warn!("Axiom answered {}, trying again later", response.status());
+                keep = true;
+            }
+            Ok(Err(err)) => {
+                log::warn!("could not reach Axiom, trying again later: {err}");
+                keep = true;
+            }
+            Err(err) => log::error!("bad AXIOM_DOMAIN or AXIOM_DATASET: {err}"),
+        }
+    }
+
+    ctx.with_tx(|tx| {
+        if !keep {
+            for event in &batch {
+                tx.db.log_event().id().delete(event.id);
+            }
+        }
+        tx.db
+            .log_shipment()
+            .scheduled_id()
+            .delete(shipment.scheduled_id);
+        // Events that arrived meanwhile saw this run's row and scheduled nothing.
+        if tx.db.log_event().count() > 0 && tx.db.log_shipment().count() == 0 {
+            let wait = if keep {
+                LOG_RETRY_DELAY
+            } else {
+                Duration::ZERO
+            };
+            ship_logs_at(tx, tx.timestamp + wait);
+        }
+    });
 }
 
 // Views --------------------------------------------------------------------
