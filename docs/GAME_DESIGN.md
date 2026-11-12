@@ -123,11 +123,11 @@ read scripts.
 ## Architecture
 
 ```
-            prompt                    POST /job
+            prompt                   work queue
  client  ───────────►  SpacetimeDB  ───────────►  agent worker ──► model API
- (Bevy)  ◄───────────    module     ◄─────────── (Cloudflare)
+ (Bevy)  ◄───────────    module     ◄───────────  (Cloudflare)
           game state,   (server/)    deliver_script
-          match frames  validates    (HTTP reducer call)
+          match frames  validates      (reducer)
 ```
 
 | Crate | What it is |
@@ -149,19 +149,39 @@ Decisions worth knowing about:
   VM, because the module is WebAssembly and cannot link C Lua. Scripts get
   `math`, `string`, `table` and the base library only, a fuel budget per tick
   and a memory cap.
-- **The agent is a Cloudflare Worker, not part of the module.** A SpacetimeDB
+- **The agent is a separate worker that pulls its work.** A SpacetimeDB
   module can only make HTTP calls that finish within 500 ms, far too short for
-  a model to write code. So the module only *pokes* the Worker (`POST /job`,
-  answered at once) and the Worker calls the `deliver_script` reducer over
-  SpacetimeDB's HTTP API when the model is done. Both directions carry
-  `AGENT_SECRET`. A Worker costs nothing while idle and waiting on the model
-  is not billed, which is why it is cheap.
-- **The module is the only judge of a script.** The Worker does no checking
+  a model to write code, and it refuses to call local addresses at all. So the
+  module calls nobody. A prompt becomes a row in a private queue table
+  (`agent_job`); the worker is connected like any other client, subscribed to
+  the jobs given to it (the `agent_work` view), and answers with the
+  `deliver_script` reducer when the model is done. The worker needs no address
+  of its own, which makes local development the same as production.
+- **The worker is a Cloudflare Worker, so there is no server to keep.** A
+  subscription needs somebody to stay connected, and a plain Worker only
+  lives for one request, so the connection is held by a Durable Object that
+  keeps itself awake with an alarm while there is work. It talks to the database in the JSON
+  WebSocket protocol directly, since the SpacetimeDB TypeScript SDK generates
+  code at runtime, which Workers do not allow. The price is that the worker
+  reads `agent_work` rows by column position: change `AgentJob` in the module
+  and `JobRow` in `worker/src/index.ts` has to follow.
+- **A deployed worker sleeps until it is needed.** A few seconds after
+  its last job it disconnects, and Cloudflare stops billing for it. When a prompt
+  comes in and no worker is connected, the module keeps the job and sends one
+  request to the worker's address (`AGENT_URL`). That request carries nothing;
+  it only wakes the worker, which connects and is given the waiting jobs when
+  it registers. A job whose worker drops off goes back to waiting the same
+  way. Locally the module can't make that request, so there `AGENT_URL` stays
+  unset, the worker stays connected, and a prompt with no worker fails.
+- **Workers sign on with a password.** A worker calls `register_worker` with
+  `AGENT_SECRET` once per connection. Each prompt is given to one registered
+  worker, only that worker sees it and only that worker may answer it.
+- **The module is the only judge of a script.** The worker does no checking
   and keeps no state. `deliver_script` validates the Lua with the sim. A valid
-  script makes the player ready. An invalid one is sent back to the Worker
-  with the error for one more try; until a script passes, the player just
-  stays "generating". After the last failed try, or 45 s without an answer,
-  the submission fails and the player can prompt again.
+  script makes the player ready. An invalid one goes back in the queue with
+  the error for one more try; until a script passes, the player just stays
+  "generating". After the last failed try, or 45 s without an answer, the
+  submission fails and the player can prompt again.
 - **Small, fast models by default** (`claude-haiku-5-5`, `gpt-6-luna`). A bot
   script is a small task and everyone is waiting on the slowest agent.
 - **Private by default.** Prompts and scripts are in private tables that no
@@ -188,9 +208,6 @@ Decisions worth knowing about:
   the settings until the owner is back or the room empties.
 - **Identity**: the browser keeps your player for the tab session; the desktop
   client is a new player on every launch.
-- **Agent time limit**: the Worker finishes in the background after answering
-  the module, where Cloudflare allows about 30 s. Fine for a small model; a
-  slow one would need a Cloudflare Queue.
 - **Who pays for the agent?** One shared API key on the worker today. Options:
   bring your own key, or per-player budgets.
 - **Agent depth**: today the agent is a single model call. It could become a

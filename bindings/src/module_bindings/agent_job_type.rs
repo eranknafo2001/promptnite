@@ -9,9 +9,12 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 pub struct AgentJob {
     pub id: u64,
     pub player_id: u32,
+    pub worker: __sdk::Identity,
     pub round: u32,
     pub prompt: String,
     pub attempt: u32,
+    pub rejected_script: String,
+    pub rejected_error: String,
 }
 
 impl __sdk::InModule for AgentJob {
@@ -24,9 +27,12 @@ impl __sdk::InModule for AgentJob {
 pub struct AgentJobCols {
     pub id: __sdk::__query_builder::Col<AgentJob, u64>,
     pub player_id: __sdk::__query_builder::Col<AgentJob, u32>,
+    pub worker: __sdk::__query_builder::Col<AgentJob, __sdk::Identity>,
     pub round: __sdk::__query_builder::Col<AgentJob, u32>,
     pub prompt: __sdk::__query_builder::Col<AgentJob, String>,
     pub attempt: __sdk::__query_builder::Col<AgentJob, u32>,
+    pub rejected_script: __sdk::__query_builder::Col<AgentJob, String>,
+    pub rejected_error: __sdk::__query_builder::Col<AgentJob, String>,
 }
 
 impl __sdk::__query_builder::HasCols for AgentJob {
@@ -35,9 +41,12 @@ impl __sdk::__query_builder::HasCols for AgentJob {
         AgentJobCols {
             id: __sdk::__query_builder::Col::new(table_name, "id"),
             player_id: __sdk::__query_builder::Col::new(table_name, "player_id"),
+            worker: __sdk::__query_builder::Col::new(table_name, "worker"),
             round: __sdk::__query_builder::Col::new(table_name, "round"),
             prompt: __sdk::__query_builder::Col::new(table_name, "prompt"),
             attempt: __sdk::__query_builder::Col::new(table_name, "attempt"),
+            rejected_script: __sdk::__query_builder::Col::new(table_name, "rejected_script"),
+            rejected_error: __sdk::__query_builder::Col::new(table_name, "rejected_error"),
         }
     }
 }
@@ -48,6 +57,7 @@ impl __sdk::__query_builder::HasCols for AgentJob {
 pub struct AgentJobIxCols {
     pub id: __sdk::__query_builder::IxCol<AgentJob, u64>,
     pub player_id: __sdk::__query_builder::IxCol<AgentJob, u32>,
+    pub worker: __sdk::__query_builder::IxCol<AgentJob, __sdk::Identity>,
 }
 
 impl __sdk::__query_builder::HasIxCols for AgentJob {
@@ -56,6 +66,7 @@ impl __sdk::__query_builder::HasIxCols for AgentJob {
         AgentJobIxCols {
             id: __sdk::__query_builder::IxCol::new(table_name, "id"),
             player_id: __sdk::__query_builder::IxCol::new(table_name, "player_id"),
+            worker: __sdk::__query_builder::IxCol::new(table_name, "worker"),
         }
     }
 }

@@ -12,15 +12,21 @@
 //!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --8s--> Prompting
 //!
 //! The LLM call does *not* happen here: a module's HTTP requests are cut off
-//! after 500 ms. Instead the module pokes an agent worker (`worker/`, a
-//! Cloudflare Worker) and the worker calls back:
+//! after 500 ms, and it may not call local addresses at all. Instead an agent
+//! worker (`worker/`) connects like any other client and takes its work from
+//! a queue, the `agent_job` table:
 //!
-//!   submit_prompt ──► agent_call (scheduled) ──► notify_agent ── POST /job ──► worker
-//!   deliver_script / fail_job  ◄───────────── HTTP reducer call ◄───────────── worker
+//!   submit_prompt ──► agent_job row ──► `agent_work` subscription ──► worker
+//!   deliver_script / fail_job  ◄──────────── reducer call ◄────────── worker
+//!
+//! The module never sends the worker its work, so local development needs no
+//! address for the worker. A deployed worker goes to sleep when there is
+//! nothing to do; then the module only knocks on its door (`AGENT_URL`) and
+//! keeps the job until the worker has connected.
 //!
 //! The worker is a dumb pipe to the model. Everything that decides whether a
-//! script is acceptable lives here: `deliver_script` validates the Lua, sends
-//! an invalid script back to the worker with the error for another try, and
+//! script is acceptable lives here: `deliver_script` validates the Lua, puts
+//! an invalid script back in the queue with the error for another try, and
 //! only marks the player ready once a script passed.
 
 #[cfg(target_arch = "wasm32")]
@@ -29,12 +35,11 @@ mod entropy;
 use std::time::Duration;
 
 use promptnite_sim::{self as sim, rules};
-use serde_json::json;
 use spacetimedb::{
     Identity, ProcedureContext, ReducerContext, ScheduleAt, SpacetimeType, Table, TimeDuration,
-    Timestamp,
+    Timestamp, ViewContext,
     http::{Request, Timeout},
-    procedure, reducer, table,
+    procedure, reducer, table, view,
 };
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
@@ -49,11 +54,14 @@ const NO_ROOM: u32 = 0;
 
 /// How many scripts the agent may write for one prompt before we give up.
 const MAX_ATTEMPTS: u32 = 2;
-/// How long one attempt may take before the job is failed. A Cloudflare
-/// Worker gets about 30 s of background time, so nothing arrives after this.
+/// How long one attempt may take before the job is failed. The worker gives
+/// up on the model sooner (`MODEL_TIMEOUT_MS` in `worker/src/llm.ts`).
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(45);
-/// The worker only has to acknowledge the job, not finish it.
-const NOTIFY_TIMEOUT: Duration = Duration::from_millis(450);
+/// The worker only has to wake up, not do anything. A module's HTTP requests
+/// are cut off after 500 ms anyway.
+const WAKE_TIMEOUT: Duration = Duration::from_millis(450);
+/// `AgentJob::worker` of a job that is waiting for a worker to connect.
+const NO_WORKER: Identity = Identity::ZERO;
 const MAX_SCRIPT_CHARS: usize = 20_000;
 const MAX_ERROR_CHARS: usize = 300;
 
@@ -63,15 +71,16 @@ const HOUSE_BOT_ID: u32 = 0;
 
 // Environment --------------------------------------------------------------
 
-/// Set at publish time: `AGENT_URL=... AGENT_SECRET=... spacetime publish ...`.
+/// Set at publish time: `AGENT_SECRET=... AGENT_URL=... spacetime publish ...`.
 #[spacetimedb::env]
 pub struct Env {
-    /// Base URL of the agent worker, e.g. `https://promptnite-agent.you.workers.dev`.
+    /// Password an agent worker shows in `register_worker` to be given work.
     /// When unset there is no agent and every prompt gets the example bot.
-    pub AGENT_URL: Option<String>,
-    /// Shared secret: sent to the worker with each job, and required back
-    /// from it in `deliver_script` / `fail_job`.
     pub AGENT_SECRET: Option<String>,
+    /// Address of a deployed worker that sleeps while there is no work, e.g.
+    /// `https://promptnite-agent.you.workers.dev`. A request to it wakes the
+    /// worker up. When unset, a worker has to be connected already.
+    pub AGENT_URL: Option<String>,
 }
 
 // Tables -------------------------------------------------------------------
@@ -183,7 +192,16 @@ pub struct BotScript {
     script: String,
 }
 
-/// A prompt the agent worker is turning into a script. Private.
+/// An agent worker that is connected right now. Private.
+#[table(accessor = agent_worker)]
+pub struct AgentWorker {
+    #[primary_key]
+    identity: Identity,
+}
+
+/// The work queue: a prompt an agent worker is turning into a script. The
+/// row is there for as long as the work is open. Private; a worker reads its
+/// own rows through the `agent_work` view.
 #[table(accessor = agent_job)]
 pub struct AgentJob {
     /// What the worker calls back with. A new prompt gets a new id, so an
@@ -193,28 +211,28 @@ pub struct AgentJob {
     id: u64,
     #[unique]
     player_id: u32,
+    /// The worker this job was given to, or `NO_WORKER` while it waits for
+    /// one to wake up.
+    #[index(btree)]
+    worker: Identity,
     round: u32,
     prompt: String,
     /// 1 for the first script, 2 after one was rejected, ...
     attempt: u32,
-}
-
-/// Outbox: one row per HTTP request to the agent worker. Reducers can't do
-/// HTTP, so they insert here and the `notify_agent` procedure sends it.
-#[table(accessor = agent_call, scheduled(notify_agent))]
-pub struct AgentCall {
-    #[primary_key]
-    #[auto_inc]
-    scheduled_id: u64,
-    scheduled_at: ScheduleAt,
-    job_id: u64,
-    player_id: u32,
-    round: u32,
-    prompt: String,
     /// Both empty on the first attempt. On a retry: the script the module
     /// rejected and why, so the model can fix it.
     rejected_script: String,
     rejected_error: String,
+}
+
+/// Outbox: one row per wake-up call to the worker. Reducers can't do HTTP,
+/// so they insert here and the `wake_agent` procedure sends it.
+#[table(accessor = agent_wake, scheduled(wake_agent))]
+pub struct AgentWake {
+    #[primary_key]
+    #[auto_inc]
+    scheduled_id: u64,
+    scheduled_at: ScheduleAt,
 }
 
 /// Fails a job whose worker never answered.
@@ -292,10 +310,42 @@ pub struct PhaseTimer {
     winner: Option<u32>,
 }
 
+// Views --------------------------------------------------------------------
+
+/// The jobs given to the calling agent worker. This is what a worker
+/// subscribes to: a job shows up here when there is a script to write, shows
+/// up again with the next `attempt` when that script was rejected, and is
+/// gone once it is settled.
+#[view(accessor = agent_work, public)]
+fn agent_work(ctx: &ViewContext) -> Vec<AgentJob> {
+    ctx.db.agent_job().worker().filter(ctx.sender()).collect()
+}
+
 // Lifecycle ----------------------------------------------------------------
 
 #[reducer(client_disconnected)]
 pub fn client_disconnected(ctx: &ReducerContext) {
+    if ctx.db.agent_worker().identity().delete(ctx.sender()) {
+        // Nobody is writing these any more.
+        let orphans: Vec<AgentJob> = ctx.db.agent_job().worker().filter(ctx.sender()).collect();
+        let wake = agent_url(ctx).is_some() && !orphans.is_empty();
+        for job in orphans {
+            if wake {
+                // A worker that sleeps may have nodded off just as the job
+                // came in. Keep it for when the worker is back.
+                ctx.db.agent_job().id().update(AgentJob {
+                    worker: NO_WORKER,
+                    ..job
+                });
+            } else {
+                // Fail it now so the player doesn't sit out the timeout.
+                fail(ctx, job, "The agent went offline. Try again.".into());
+            }
+        }
+        if wake {
+            wake_worker(ctx);
+        }
+    }
     if let Some(player) = ctx.db.player().identity().find(ctx.sender()) {
         let room_id = player.room_id;
         ctx.db.player().identity().update(Player {
@@ -476,19 +526,45 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         script: String::new(),
     });
 
-    if agent_url(ctx).is_none() {
+    if agent_secret(ctx).is_none() {
         // No agent configured: everyone gets the example bot, so the game
         // loop can be tried without a worker or an API key.
         return accept_script(ctx, player.id, sim::EXAMPLE_SCRIPT.to_string());
     }
+    // Usually there is one worker. With several, the least busy one.
+    let worker = ctx
+        .db
+        .agent_worker()
+        .iter()
+        .min_by_key(|worker| ctx.db.agent_job().worker().filter(worker.identity).count());
+    let worker = match worker {
+        Some(worker) => worker.identity,
+        None if agent_url(ctx).is_some() => {
+            // The worker is asleep. The job waits for it: see `register_worker`.
+            wake_worker(ctx);
+            NO_WORKER
+        }
+        None => {
+            set_submission(
+                ctx,
+                player.id,
+                SubmissionStatus::Failed,
+                "The agent is offline. Try again later.".into(),
+            );
+            return Ok(());
+        }
+    };
     let job = ctx.db.agent_job().insert(AgentJob {
         id: 0, // auto_inc
         player_id: player.id,
+        worker,
         round: room.round,
         prompt,
         attempt: 1,
+        rejected_script: String::new(),
+        rejected_error: String::new(),
     });
-    call_agent(ctx, &job, String::new(), String::new());
+    start_timeout(ctx, &job);
     Ok(())
 }
 
@@ -519,72 +595,85 @@ pub fn submit_script(ctx: &ReducerContext, script: String) -> Result<(), String>
 
 // Agent worker ------------------------------------------------------------
 
-/// Sends one job to the agent worker. Runs from the `agent_call` schedule.
-///
-/// The worker answers "accepted" straight away and calls `deliver_script` or
-/// `fail_job` when the model is done, so this fits the 500 ms HTTP limit.
-#[procedure]
-pub fn notify_agent(ctx: &mut ProcedureContext, call: AgentCall) {
-    // Scheduled procedures are callable by anyone unless we check.
-    if ctx.sender() != ctx.database_identity() {
-        log::warn!("notify_agent called by {}", ctx.sender());
-        return;
+/// An agent worker reports for duty. It is given the jobs that were waiting
+/// for a worker, and from here on new prompts, until it disconnects.
+#[reducer]
+pub fn register_worker(ctx: &ReducerContext, secret: String) -> Result<(), String> {
+    match agent_secret(ctx) {
+        Some(expected) if expected == secret => {}
+        _ => return Err("Wrong agent secret".into()),
     }
-    let (Some(url), Some(secret)) = (ctx.env.AGENT_URL(), ctx.env.AGENT_SECRET()) else {
-        return;
-    };
-
-    let mut body = json!({
-        "job_id": call.job_id,
-        "prompt": call.prompt,
-    });
-    if !call.rejected_script.is_empty() {
-        body["rejected"] = json!({
-            "script": call.rejected_script,
-            "error": call.rejected_error,
+    if ctx
+        .db
+        .agent_worker()
+        .identity()
+        .find(ctx.sender())
+        .is_none()
+    {
+        ctx.db.agent_worker().insert(AgentWorker {
+            identity: ctx.sender(),
+        });
+        log::info!("agent worker {} registered", ctx.sender());
+    }
+    let waiting: Vec<AgentJob> = ctx.db.agent_job().worker().filter(NO_WORKER).collect();
+    for job in waiting {
+        ctx.db.agent_job().id().update(AgentJob {
+            worker: ctx.sender(),
+            ..job
         });
     }
-    let request = Request::builder()
-        .uri(format!("{}/job", url.trim_end_matches('/')))
-        .method("POST")
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {secret}"))
-        .extension(Timeout::from(TimeDuration::from(NOTIFY_TIMEOUT)))
-        .body(body.to_string());
-
-    let problem = match request {
-        Err(err) => Some(format!("bad AGENT_URL: {err}")),
-        Ok(request) => match ctx.http.send(request) {
-            Ok(response) if response.status().is_success() => None,
-            Ok(response) => Some(format!("it answered {}", response.status())),
-            Err(err) => Some(err.to_string()),
-        },
-    };
-    if let Some(problem) = problem {
-        log::error!("job {}: agent worker unreachable: {problem}", call.job_id);
-        let job_id = call.job_id;
-        ctx.with_tx(|tx| {
-            if let Some(job) = tx.db.agent_job().id().find(job_id) {
-                fail(tx, job, "Could not reach the agent. Try again.".into());
-            }
-        });
-    }
+    Ok(())
 }
 
-/// The agent wrote a script. Called by the worker over HTTP.
+/// Knocks on the sleeping worker's door. Runs from the `agent_wake` schedule.
+///
+/// Any request wakes the worker; it then connects and registers by itself.
+#[procedure]
+pub fn wake_agent(ctx: &mut ProcedureContext, _wake: AgentWake) {
+    // Scheduled procedures are callable by anyone unless we check.
+    if ctx.sender() != ctx.database_identity() {
+        log::warn!("wake_agent called by {}", ctx.sender());
+        return;
+    }
+    let Some(url) = ctx.env.AGENT_URL().filter(|url| !url.is_empty()) else {
+        return;
+    };
+    let request = Request::builder()
+        .uri(url)
+        .method("GET")
+        .extension(Timeout::from(TimeDuration::from(WAKE_TIMEOUT)))
+        .body(String::new());
+    let problem = match request {
+        Err(err) => format!("bad AGENT_URL: {err}"),
+        Ok(request) => match ctx.http.send(request) {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => format!("it answered {}", response.status()),
+            Err(err) => err.to_string(),
+        },
+    };
+    log::error!("could not wake the agent worker: {problem}");
+    ctx.with_tx(|tx| {
+        // Unless a worker turned up anyway, nobody is coming for these.
+        let waiting: Vec<AgentJob> = tx.db.agent_job().worker().filter(NO_WORKER).collect();
+        for job in waiting {
+            fail(
+                tx,
+                job,
+                "Could not reach the agent. Try again later.".into(),
+            );
+        }
+    });
+}
+
+/// The agent wrote a script. Called by the worker the job was given to.
 ///
 /// This is the only place a generated script is judged. A valid one makes the
-/// player ready. An invalid one goes back to the worker together with the
+/// player ready. An invalid one goes back in the queue together with the
 /// error; the player stays "generating" and nothing else changes until a
 /// script passes or the attempts run out.
 #[reducer]
-pub fn deliver_script(
-    ctx: &ReducerContext,
-    secret: String,
-    job_id: u64,
-    script: String,
-) -> Result<(), String> {
-    let job = job_for_worker(ctx, &secret, job_id)?;
+pub fn deliver_script(ctx: &ReducerContext, job_id: u64, script: String) -> Result<(), String> {
+    let job = job_for_worker(ctx, job_id)?;
 
     let verdict = if script.chars().count() > MAX_SCRIPT_CHARS {
         Err(format!(
@@ -602,9 +691,11 @@ pub fn deliver_script(
             log::info!("job {}: script rejected, asking again: {error}", job.id);
             let job = ctx.db.agent_job().id().update(AgentJob {
                 attempt: job.attempt + 1,
+                rejected_script: script,
+                rejected_error: error,
                 ..job
             });
-            call_agent(ctx, &job, script, error);
+            start_timeout(ctx, &job);
             Ok(())
         }
         Err(error) => {
@@ -620,13 +711,8 @@ pub fn deliver_script(
 
 /// The agent could not produce a script (API error, refusal, ...).
 #[reducer]
-pub fn fail_job(
-    ctx: &ReducerContext,
-    secret: String,
-    job_id: u64,
-    error: String,
-) -> Result<(), String> {
-    let job = job_for_worker(ctx, &secret, job_id)?;
+pub fn fail_job(ctx: &ReducerContext, job_id: u64, error: String) -> Result<(), String> {
+    let job = job_for_worker(ctx, job_id)?;
     let error: String = error.chars().take(MAX_ERROR_CHARS).collect();
     fail(ctx, job, error);
     Ok(())
@@ -647,27 +733,24 @@ pub fn expire_job(ctx: &ReducerContext, timeout: JobTimeout) -> Result<(), Strin
     Ok(())
 }
 
+fn agent_secret(ctx: &ReducerContext) -> Option<String> {
+    ctx.env.AGENT_SECRET().filter(|secret| !secret.is_empty())
+}
+
 fn agent_url(ctx: &ReducerContext) -> Option<String> {
     ctx.env.AGENT_URL().filter(|url| !url.is_empty())
 }
 
-/// Queue the HTTP request for this job's current attempt, plus its timeout.
-fn call_agent(
-    ctx: &ReducerContext,
-    job: &AgentJob,
-    rejected_script: String,
-    rejected_error: String,
-) {
-    ctx.db.agent_call().insert(AgentCall {
+/// Have `wake_agent` run right after this transaction.
+fn wake_worker(ctx: &ReducerContext) {
+    ctx.db.agent_wake().insert(AgentWake {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::Time(ctx.timestamp),
-        job_id: job.id,
-        player_id: job.player_id,
-        round: job.round,
-        prompt: job.prompt.clone(),
-        rejected_script,
-        rejected_error,
     });
+}
+
+/// Fail this attempt of the job if the worker hasn't answered in time.
+fn start_timeout(ctx: &ReducerContext, job: &AgentJob) {
     ctx.db.job_timeout().insert(JobTimeout {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::Time(ctx.timestamp + ATTEMPT_TIMEOUT),
@@ -676,15 +759,17 @@ fn call_agent(
     });
 }
 
-/// Check the shared secret and find the job the worker is reporting on.
-fn job_for_worker(ctx: &ReducerContext, secret: &str, job_id: u64) -> Result<AgentJob, String> {
-    match ctx.env.AGENT_SECRET() {
-        Some(expected) if !expected.is_empty() && expected == secret => {}
-        _ => return Err("Wrong agent secret".into()),
-    }
-    ctx.db.agent_job().id().find(job_id).ok_or_else(|| {
-        "No such job (the player resubmitted, it timed out or the round moved on)".into()
-    })
+/// Find the job a worker is reporting on. Only the worker it was given to
+/// may answer it, and only registered workers are ever given one.
+fn job_for_worker(ctx: &ReducerContext, job_id: u64) -> Result<AgentJob, String> {
+    ctx.db
+        .agent_job()
+        .id()
+        .find(job_id)
+        .filter(|job| job.worker == ctx.sender())
+        .ok_or_else(|| {
+            "No such job (the player resubmitted, it timed out or the round moved on)".into()
+        })
 }
 
 /// A validated script: store it, mark the player ready, maybe start the match.

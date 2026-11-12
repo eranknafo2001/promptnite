@@ -5559,7 +5559,6 @@ dependencies = [
  "getrandom 0.3.4",
  "log",
  "promptnite-sim",
- "serde_json",
  "spacetimedb",
 ]
 

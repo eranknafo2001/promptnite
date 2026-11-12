@@ -7,7 +7,6 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub(super) struct FailJobArgs {
-    pub secret: String,
     pub job_id: u64,
     pub error: String,
 }
@@ -15,7 +14,6 @@ pub(super) struct FailJobArgs {
 impl From<FailJobArgs> for super::Reducer {
     fn from(args: FailJobArgs) -> Self {
         Self::FailJob {
-            secret: args.secret,
             job_id: args.job_id,
             error: args.error,
         }
@@ -37,8 +35,8 @@ pub trait fail_job {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`fail_job:fail_job_then`] to run a callback after the reducer completes.
-    fn fail_job(&self, secret: String, job_id: u64, error: String) -> __sdk::Result<()> {
-        self.fail_job_then(secret, job_id, error, |_, _| {})
+    fn fail_job(&self, job_id: u64, error: String) -> __sdk::Result<()> {
+        self.fail_job_then(job_id, error, |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `fail_job` to run as soon as possible,
@@ -49,7 +47,6 @@ pub trait fail_job {
     ///  and its status can be observed with the `callback`.
     fn fail_job_then(
         &self,
-        secret: String,
         job_id: u64,
         error: String,
 
@@ -64,7 +61,6 @@ pub trait fail_job {
 impl fail_job for super::RemoteReducers {
     fn fail_job_then(
         &self,
-        secret: String,
         job_id: u64,
         error: String,
 
@@ -74,13 +70,7 @@ impl fail_job for super::RemoteReducers {
         ) + Send
         + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(
-            FailJobArgs {
-                secret,
-                job_id,
-                error,
-            },
-            callback,
-        )
+        self.imp
+            .invoke_reducer_with_callback(FailJobArgs { job_id, error }, callback)
     }
 }

@@ -13,10 +13,11 @@ import Anthropic from "@anthropic-ai/sdk";
 const ANTHROPIC_MAX_TOKENS = 8_000;
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 /**
- * A Worker may keep running for about 30 s after it answered the module.
- * Give up on the model before that, so there is time left to report it.
+ * The module fails a job that takes longer than 45 s (`ATTEMPT_TIMEOUT` in
+ * `server/src/lib.rs`). Give up on the model before that, so the player is
+ * told what actually went wrong.
  */
-const MODEL_TIMEOUT_MS = 24_000;
+const MODEL_TIMEOUT_MS = 35_000;
 
 /**
  * Writing a short bot script is a small task and players are waiting on it,
@@ -94,7 +95,7 @@ interface Turn {
 }
 
 /**
- * The Worker keeps nothing between requests, so a retry arrives with the
+ * The worker keeps nothing between jobs, so a retry arrives with the
  * rejected script and is replayed here as the conversation so far.
  */
 function conversation(prompt: string, rejected?: Rejected): Turn[] {
@@ -147,7 +148,7 @@ async function askAnthropic(env: ModelEnv, model: string, turns: Turn[]): Promis
   const client = new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY,
     timeout: MODEL_TIMEOUT_MS,
-    // A retry would not fit in the time a Worker has left.
+    // A retry would not fit in the time the module allows for a job.
     maxRetries: 0,
   });
 

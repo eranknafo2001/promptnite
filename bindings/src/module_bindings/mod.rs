@@ -6,8 +6,10 @@
 #![allow(unused, clippy::all)]
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
-pub mod agent_call_type;
 pub mod agent_job_type;
+pub mod agent_wake_type;
+pub mod agent_work_table;
+pub mod agent_worker_type;
 pub mod bot_action_type;
 pub mod bot_frame_type;
 pub mod bot_script_type;
@@ -23,6 +25,7 @@ pub mod phase_timer_type;
 pub mod phase_type;
 pub mod player_table;
 pub mod player_type;
+pub mod register_worker_reducer;
 pub mod room_table;
 pub mod room_type;
 pub mod set_room_settings_reducer;
@@ -32,8 +35,10 @@ pub mod submission_type;
 pub mod submit_prompt_reducer;
 pub mod submit_script_reducer;
 
-pub use agent_call_type::AgentCall;
 pub use agent_job_type::AgentJob;
+pub use agent_wake_type::AgentWake;
+pub use agent_work_table::*;
+pub use agent_worker_type::AgentWorker;
 pub use bot_action_type::BotAction;
 pub use bot_frame_type::BotFrame;
 pub use bot_script_type::BotScript;
@@ -49,6 +54,7 @@ pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
 pub use player_table::*;
 pub use player_type::Player;
+pub use register_worker_reducer::register_worker;
 pub use room_table::*;
 pub use room_type::Room;
 pub use set_room_settings_reducer::set_room_settings;
@@ -66,30 +72,13 @@ pub use submit_script_reducer::submit_script;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
-    DeliverScript {
-        secret: String,
-        job_id: u64,
-        script: String,
-    },
-    FailJob {
-        secret: String,
-        job_id: u64,
-        error: String,
-    },
-    Join {
-        name: String,
-        room: String,
-    },
-    SetRoomSettings {
-        match_secs: u32,
-        house_bot: bool,
-    },
-    SubmitPrompt {
-        prompt: String,
-    },
-    SubmitScript {
-        script: String,
-    },
+    DeliverScript { job_id: u64, script: String },
+    FailJob { job_id: u64, error: String },
+    Join { name: String, room: String },
+    RegisterWorker { secret: String },
+    SetRoomSettings { match_secs: u32, house_bot: bool },
+    SubmitPrompt { prompt: String },
+    SubmitScript { script: String },
 }
 
 impl __sdk::InModule for Reducer {
@@ -102,6 +91,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::DeliverScript { .. } => "deliver_script",
             Reducer::FailJob { .. } => "fail_job",
             Reducer::Join { .. } => "join",
+            Reducer::RegisterWorker { .. } => "register_worker",
             Reducer::SetRoomSettings { .. } => "set_room_settings",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
             Reducer::SubmitScript { .. } => "submit_script",
@@ -111,28 +101,27 @@ impl __sdk::Reducer for Reducer {
     #[allow(clippy::clone_on_copy)]
     fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
-            Reducer::DeliverScript {
-                secret,
-                job_id,
-                script,
-            } => __sats::bsatn::to_vec(&deliver_script_reducer::DeliverScriptArgs {
-                secret: secret.clone(),
-                job_id: job_id.clone(),
-                script: script.clone(),
-            }),
-            Reducer::FailJob {
-                secret,
-                job_id,
-                error,
-            } => __sats::bsatn::to_vec(&fail_job_reducer::FailJobArgs {
-                secret: secret.clone(),
-                job_id: job_id.clone(),
-                error: error.clone(),
-            }),
+            Reducer::DeliverScript { job_id, script } => {
+                __sats::bsatn::to_vec(&deliver_script_reducer::DeliverScriptArgs {
+                    job_id: job_id.clone(),
+                    script: script.clone(),
+                })
+            }
+            Reducer::FailJob { job_id, error } => {
+                __sats::bsatn::to_vec(&fail_job_reducer::FailJobArgs {
+                    job_id: job_id.clone(),
+                    error: error.clone(),
+                })
+            }
             Reducer::Join { name, room } => __sats::bsatn::to_vec(&join_reducer::JoinArgs {
                 name: name.clone(),
                 room: room.clone(),
             }),
+            Reducer::RegisterWorker { secret } => {
+                __sats::bsatn::to_vec(&register_worker_reducer::RegisterWorkerArgs {
+                    secret: secret.clone(),
+                })
+            }
             Reducer::SetRoomSettings {
                 match_secs,
                 house_bot,
@@ -159,6 +148,7 @@ impl __sdk::Reducer for Reducer {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct DbUpdate {
+    agent_work: __sdk::TableUpdate<AgentJob>,
     frame: __sdk::TableUpdate<Frame>,
     match_fault: __sdk::TableUpdate<MatchFault>,
     player: __sdk::TableUpdate<Player>,
@@ -172,6 +162,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_update in __sdk::transaction_update_iter_table_updates(raw) {
             match &table_update.table_name[..] {
+                "agent_work" => db_update
+                    .agent_work
+                    .append(agent_work_table::parse_table_update(table_update)?),
                 "frame" => db_update
                     .frame
                     .append(frame_table::parse_table_update(table_update)?),
@@ -228,6 +221,7 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.submission = cache
             .apply_diff_to_table::<Submission>("submission", &self.submission)
             .with_updates_by_pk(|row| &row.player_id);
+        diff.agent_work = cache.apply_diff_to_table::<AgentJob>("agent_work", &self.agent_work);
 
         diff
     }
@@ -235,6 +229,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
+                "agent_work" => db_update
+                    .agent_work
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "frame" => db_update
                     .frame
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -263,6 +260,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
+                "agent_work" => db_update
+                    .agent_work
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "frame" => db_update
                     .frame
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -293,6 +293,7 @@ impl __sdk::DbUpdate for DbUpdate {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
+    agent_work: __sdk::TableAppliedDiff<'r, AgentJob>,
     frame: __sdk::TableAppliedDiff<'r, Frame>,
     match_fault: __sdk::TableAppliedDiff<'r, MatchFault>,
     player: __sdk::TableAppliedDiff<'r, Player>,
@@ -311,6 +312,7 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         event: &EventContext,
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
+        callbacks.invoke_table_row_callbacks::<AgentJob>("agent_work", &self.agent_work, event);
         callbacks.invoke_table_row_callbacks::<Frame>("frame", &self.frame, event);
         callbacks.invoke_table_row_callbacks::<MatchFault>("match_fault", &self.match_fault, event);
         callbacks.invoke_table_row_callbacks::<Player>("player", &self.player, event);
@@ -976,12 +978,19 @@ impl __sdk::SpacetimeModule for RemoteModule {
     type QueryBuilder = __sdk::QueryBuilder;
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
+        agent_work_table::register_table(client_cache);
         frame_table::register_table(client_cache);
         match_fault_table::register_table(client_cache);
         player_table::register_table(client_cache);
         room_table::register_table(client_cache);
         submission_table::register_table(client_cache);
     }
-    const ALL_TABLE_NAMES: &'static [&'static str] =
-        &["frame", "match_fault", "player", "room", "submission"];
+    const ALL_TABLE_NAMES: &'static [&'static str] = &[
+        "agent_work",
+        "frame",
+        "match_fault",
+        "player",
+        "room",
+        "submission",
+    ];
 }

@@ -7,7 +7,6 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub(super) struct DeliverScriptArgs {
-    pub secret: String,
     pub job_id: u64,
     pub script: String,
 }
@@ -15,7 +14,6 @@ pub(super) struct DeliverScriptArgs {
 impl From<DeliverScriptArgs> for super::Reducer {
     fn from(args: DeliverScriptArgs) -> Self {
         Self::DeliverScript {
-            secret: args.secret,
             job_id: args.job_id,
             script: args.script,
         }
@@ -37,8 +35,8 @@ pub trait deliver_script {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`deliver_script:deliver_script_then`] to run a callback after the reducer completes.
-    fn deliver_script(&self, secret: String, job_id: u64, script: String) -> __sdk::Result<()> {
-        self.deliver_script_then(secret, job_id, script, |_, _| {})
+    fn deliver_script(&self, job_id: u64, script: String) -> __sdk::Result<()> {
+        self.deliver_script_then(job_id, script, |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `deliver_script` to run as soon as possible,
@@ -49,7 +47,6 @@ pub trait deliver_script {
     ///  and its status can be observed with the `callback`.
     fn deliver_script_then(
         &self,
-        secret: String,
         job_id: u64,
         script: String,
 
@@ -64,7 +61,6 @@ pub trait deliver_script {
 impl deliver_script for super::RemoteReducers {
     fn deliver_script_then(
         &self,
-        secret: String,
         job_id: u64,
         script: String,
 
@@ -74,13 +70,7 @@ impl deliver_script for super::RemoteReducers {
         ) + Send
         + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(
-            DeliverScriptArgs {
-                secret,
-                job_id,
-                script,
-            },
-            callback,
-        )
+        self.imp
+            .invoke_reducer_with_callback(DeliverScriptArgs { job_id, script }, callback)
     }
 }
