@@ -23,8 +23,8 @@
 //!      the real work per tick bounded, not just the instruction count.
 
 use piccolo::{
-    Closure, Context, Executor, Fuel, FunctionPrototype, Lua, StashedExecutor, StashedFunction,
-    Table, Value, constant::Constant, opcode::Operation, stdlib,
+    Callback, CallbackReturn, Closure, Context, Executor, Fuel, FunctionPrototype, IntoValue, Lua,
+    StashedExecutor, StashedFunction, Table, Value, constant::Constant, opcode::Operation, stdlib,
 };
 
 use crate::{rules, sim::Action};
@@ -83,6 +83,7 @@ impl LuaBot {
             stdlib::load_math(ctx);
             stdlib::load_string(ctx);
             stdlib::load_table(ctx);
+            bound_unpack(ctx);
         });
         let executor = lua.enter(|ctx| ctx.stash(Executor::new(ctx)));
         lua.gc_collect();
@@ -160,6 +161,31 @@ impl LuaBot {
     /// script is not worth calling again.
     pub fn out_of_memory(&self) -> bool {
         self.out_of_memory
+    }
+}
+
+/// Replace `table.unpack` with one that cannot be asked for more values than
+/// [`rules::MAX_UNPACK_VALUES`], and that pays fuel for each. The stock one
+/// takes the range on trust: `table.unpack({}, 1, 1e9)` makes room for a
+/// billion values in a single call.
+fn bound_unpack(ctx: Context<'_>) {
+    let unpack = Callback::from_fn(&ctx, |ctx, mut exec, mut stack| {
+        let (table, start, end): (Table, Option<i64>, Option<i64>) = stack.consume(ctx)?;
+        let start = start.unwrap_or(1);
+        let end = end.unwrap_or_else(|| table.length());
+        if start <= end {
+            let count = end
+                .checked_sub(start)
+                .filter(|span| *span < rules::MAX_UNPACK_VALUES as i64)
+                .ok_or_else(|| "too many results to unpack".into_value(ctx))?
+                + 1;
+            exec.fuel().consume(count as i32);
+            stack.extend((start..=end).map(|i| table.get_value(i.into())));
+        }
+        Ok(CallbackReturn::Return)
+    });
+    if let Value::Table(table) = ctx.get_global("table") {
+        table.set(ctx, "unpack", unpack).unwrap();
     }
 }
 

@@ -78,5 +78,8 @@ pub const MAX_LUA_MEMORY_BYTES: usize = 1024 * 1024;
 /// strings either, so this is also the longest string they can ever hold.
 pub const MAX_STRING_LITERAL_BYTES: usize = 256;
 
+/// Most values one `table.unpack` call may return.
+pub const MAX_UNPACK_VALUES: usize = 1024;
+
 /// Largest script we accept, in bytes.
 pub const MAX_SCRIPT_BYTES: usize = 16 * 1024;

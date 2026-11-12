@@ -79,10 +79,12 @@ fn hostile_scripts_cannot_stall_a_match() {
     let scripts = [
         "function tick() while true do end end",
         // One instruction, thousands of values.
-        "local t = {} for i = 1, 5000 do t[i] = i end
+        "local t = {} for i = 1, 1000 do t[i] = i end
          function tick() while true do local n = select('#', table.unpack(t)) end end",
-        "local t = {} for i = 1, 3000 do t[i] = i end
+        "local t = {} for i = 1, 1000 do t[i] = i end
          function tick() while true do t = table.pack(table.unpack(t)) end end",
+        // A range nobody has the memory for, asked of an empty table.
+        "function tick() table.unpack({}, 1, 1000000000) end",
         "local function f() return 1 + f() end function tick() f() end",
         "local t = {} function tick() while true do t[#t + 1] = function() return t end end end",
     ];
