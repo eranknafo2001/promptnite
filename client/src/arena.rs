@@ -55,9 +55,6 @@ fn camera_transform(edge: u32) -> Transform {
 }
 
 #[derive(Component)]
-pub struct Floor;
-
-#[derive(Component)]
 pub struct Bot(u32);
 
 #[derive(Resource)]
@@ -73,22 +70,59 @@ pub fn plugin(app: &mut App) {
         .add_systems(Update, (point_of_view, (replay, sync_bots).chain()));
 }
 
+/// Half the arena's side, as in `ARENA_HALF_SIZE` in `sim/src/rules.rs`.
+// ponytail: fixed, the server has only ever sent this value; build the
+// rooftop from `room.arena_half_size` if arenas start to differ.
+const ARENA_HALF_SIZE: f32 = 10.0;
+
+/// A greyboxed rooftop out of KayKit Platformer pieces: a flat 20x20 roof of
+/// 4x4 blocks (top at y = 0) with a railing along each edge, standing on the
+/// outermost 0.4 m so a bot pushed against the edge touches it.
+fn spawn_rooftop(commands: &mut Commands, assets: &AssetServer) {
+    let piece = |name: &str| WorldAssetRoot(assets.load(format!("kaykit/{name}.gltf#Scene0")));
+
+    // Blocks are 4x4x4 with their origin at the bottom centre.
+    let blocks = (ARENA_HALF_SIZE / 2.0) as i32;
+    for x in 0..blocks {
+        for z in 0..blocks {
+            let at = |i: i32| (i * 4) as f32 + 2.0 - ARENA_HALF_SIZE;
+            commands.spawn((
+                piece("platform_4x4x4_blue"),
+                Transform::from_xyz(at(x), -4.0, at(z)),
+            ));
+        }
+    }
+
+    // Railings fill a 2x2 cell and stand on its -Z side (corners: -Z and
+    // -X). Walk the ring of edge cells; a cell is rotated to face outward.
+    // Each side starts at its -X corner and stops short of the next one, so
+    // every corner is placed once.
+    let cells = ARENA_HALF_SIZE as i32; // 2 m cells per side
+    let last = ARENA_HALF_SIZE - 1.0; // centre of the outermost cell
+    for side in 0..4 {
+        let turn = Quat::from_rotation_y(side as f32 * std::f32::consts::FRAC_PI_2);
+        for i in 0..cells {
+            let name = if i == 0 {
+                "railing_corner_single_blue"
+            } else {
+                "railing_straight_single_blue"
+            };
+            let at = Vec3::new(i as f32 * 2.0 - last, 0.0, -last);
+            commands.spawn((
+                piece(name),
+                Transform::from_translation(turn * at).with_rotation(turn),
+            ));
+        }
+    }
+}
+
 fn setup(
     mut commands: Commands,
+    assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // A unit square, scaled to the arena size once the server tells us.
-    commands.spawn((
-        Floor,
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(1.0, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: theme::FLOOR,
-            perceptual_roughness: 0.9,
-            ..default()
-        })),
-        Transform::from_scale(Vec3::new(20.0, 1.0, 20.0)),
-    ));
+    spawn_rooftop(&mut commands, &assets);
 
     commands.spawn((
         DirectionalLight {
@@ -131,14 +165,12 @@ pub fn replay(
     screen: Res<Screen>,
     conn: Option<Res<Conn>>,
     mut replay: ResMut<Replay>,
-    mut floor: Single<&mut Transform, With<Floor>>,
 ) {
     replay.bots.clear();
     let Screen::Room(snapshot) = &*screen else {
         return;
     };
     let room = &snapshot.game;
-    floor.scale = Vec3::new(room.arena_half_size * 2.0, 1.0, room.arena_half_size * 2.0);
 
     // We time the replay from the moment we *see* the phase change instead of
     // comparing clocks with the server, so a wrong local clock can't break it.

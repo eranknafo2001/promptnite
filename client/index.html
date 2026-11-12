@@ -6,6 +6,8 @@
     <title>promptnite</title>
     <!-- Trunk compiles the client to wasm and injects the loader here. -->
     <link data-trunk rel="rust" data-bin="promptnite" data-wasm-opt="s" />
+    <!-- Served at ./assets, where Bevy's asset server looks in the browser. -->
+    <link data-trunk rel="copy-dir" href="assets" />
     <style>
       html,
       body {
