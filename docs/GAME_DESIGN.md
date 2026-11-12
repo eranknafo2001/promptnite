@@ -188,7 +188,8 @@ Decisions worth knowing about:
   the client does hold the whole replay; nothing can be changed by then.
 - **Prompts are rate-limited.** A player may send one a second. Identities
   are free to make, so what protects the model API key is a budget for the
-  whole database: 60 model calls a minute and 5,000 a day, retries included
+  whole database, sized for 50 people playing at once: 300 model calls a
+  minute and 30,000 a day, retries included
   (`MAX_AGENT_CALLS_PER_MINUTE`, `MAX_AGENT_CALLS_PER_DAY`). Over it, prompts
   are turned away with "the agents are busy".
 - **A house bot** (the reference chaser) fights in every match unless the

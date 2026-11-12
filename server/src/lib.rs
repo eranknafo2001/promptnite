@@ -67,9 +67,14 @@ const PROMPT_INTERVAL: Duration = Duration::from_secs(1);
 /// Model calls the whole database may start per minute and per day, retries
 /// included. Identities are free to make, so the per-player limit alone does
 /// not protect the model API key; these do. Above them prompts are turned
-/// away until the window ends. Sized for a few dozen people playing at once.
-const MAX_AGENT_CALLS_PER_MINUTE: u32 = 60;
-const MAX_AGENT_CALLS_PER_DAY: u32 = 5_000;
+/// away until the window ends.
+///
+/// Sized for 50 people playing at once. The minute covers all of them
+/// sending three prompts that each need their retry (50 * 3 * 2). The day
+/// covers eight hours of a full house at a prompt a minute each, a quarter
+/// of them retried.
+const MAX_AGENT_CALLS_PER_MINUTE: u32 = 300;
+const MAX_AGENT_CALLS_PER_DAY: u32 = 30_000;
 const BUSY: &str = "The agents are busy. Try again in a moment.";
 
 /// Bot id of the built-in sparring partner, in rooms that have it switched on.
