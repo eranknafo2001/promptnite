@@ -3,12 +3,28 @@
 //! Scripts are untrusted (an LLM wrote them from a player's prompt), so each
 //! bot gets its own VM with:
 //!   * only the pure parts of the stdlib (no `io`, no `os`),
-//!   * an instruction budget per call (see [`rules::TICK_FUEL`]),
+//!   * a work budget per call (see [`rules::TICK_FUEL`]),
 //!   * a heap cap (see [`rules::MAX_LUA_MEMORY_BYTES`]),
 //!   * a seeded `math.random`, so a match replays identically.
+//!
+//! The module that runs this has no clock, so "how long may a tick take" has
+//! to be answered by counting. Three things together bound it:
+//!
+//!   1. Fuel: the VM charges for every instruction and call.
+//!   2. No way to build a big value in a few instructions. The only one Lua
+//!      offers is string concatenation (`s = s .. s` doubles a string each
+//!      time, a gigabyte in 30 instructions), so scripts that use `..` or
+//!      carry a long string literal are refused when they are loaded
+//!      ([`check_prototype`]). Everything else grows by a bounded amount per
+//!      instruction.
+//!   3. Fuel costs more the more memory a script holds
+//!      ([`rules::FUEL_MEMORY_UNIT`]). One instruction can be as expensive as
+//!      the heap is large (walking a table, copying a string), so this keeps
+//!      the real work per tick bounded, not just the instruction count.
 
 use piccolo::{
-    Closure, Context, Executor, Fuel, Lua, StashedExecutor, StashedFunction, Table, Value, stdlib,
+    Closure, Context, Executor, Fuel, FunctionPrototype, Lua, StashedExecutor, StashedFunction,
+    Table, Value, constant::Constant, opcode::Operation, stdlib,
 };
 
 use crate::{rules, sim::Action};
@@ -38,6 +54,16 @@ pub struct LuaBot {
     lua: Lua,
     executor: StashedExecutor,
     tick_fn: StashedFunction,
+    /// Heap size of the VM before the script was loaded.
+    floor: usize,
+    /// Set once the script has gone over the heap cap.
+    out_of_memory: bool,
+}
+
+/// Why a script was stopped before it finished.
+enum Stop {
+    Fuel,
+    Memory,
 }
 
 impl LuaBot {
@@ -59,6 +85,8 @@ impl LuaBot {
             stdlib::load_table(ctx);
         });
         let executor = lua.enter(|ctx| ctx.stash(Executor::new(ctx)));
+        lua.gc_collect();
+        let floor = lua.total_memory();
 
         // Seed first so the player's own top-level code already sees a
         // deterministic RNG. Kept as a separate chunk so error line numbers
@@ -66,10 +94,11 @@ impl LuaBot {
         run_chunk(
             &mut lua,
             &executor,
+            floor,
             "seed",
             &format!("math.randomseed({seed})"),
         )?;
-        run_chunk(&mut lua, &executor, "bot", source)?;
+        run_chunk(&mut lua, &executor, floor, "bot", source)?;
 
         let tick_fn = lua.enter(|ctx| match ctx.get_global("tick") {
             Value::Function(f) => Ok(ctx.stash(f)),
@@ -83,6 +112,8 @@ impl LuaBot {
             lua,
             executor,
             tick_fn,
+            floor,
+            out_of_memory: false,
         })
     }
 
@@ -93,18 +124,23 @@ impl LuaBot {
     pub fn tick(&mut self, view: &BotView) -> Result<Action, String> {
         let (executor, tick_fn) = (&self.executor, &self.tick_fn);
 
-        let mut fuel = Fuel::with(rules::TICK_FUEL);
-        let finished = self.lua.enter(|ctx| {
+        self.lua.enter(|ctx| {
             let state = build_state(ctx, view);
-            let executor = ctx.fetch(executor);
-            executor.restart(ctx, ctx.fetch(tick_fn), state);
-            executor.step(ctx, &mut fuel)
+            ctx.fetch(executor).restart(ctx, ctx.fetch(tick_fn), state);
         });
-        if !finished {
-            return Err(format!(
-                "tick() used more than {} instructions",
-                rules::TICK_FUEL
-            ));
+        match run(&mut self.lua, executor, self.floor, rules::TICK_FUEL) {
+            Ok(()) => {}
+            Err(Stop::Fuel) => {
+                return Err(format!(
+                    "tick() ran out of its budget of {} instructions \
+                     (they cost more the more memory the script holds)",
+                    rules::TICK_FUEL
+                ));
+            }
+            Err(Stop::Memory) => {
+                self.out_of_memory = true;
+                return Err(out_of_memory());
+            }
         }
 
         self.lua
@@ -115,10 +151,84 @@ impl LuaBot {
             })
     }
 
-    /// Current Lua heap size in bytes.
+    /// Current Lua heap size in bytes, garbage included.
     pub fn memory(&self) -> usize {
         self.lua.total_memory()
     }
+
+    /// Whether a tick went over [`rules::MAX_LUA_MEMORY_BYTES`]. Such a
+    /// script is not worth calling again.
+    pub fn out_of_memory(&self) -> bool {
+        self.out_of_memory
+    }
+}
+
+fn out_of_memory() -> String {
+    format!(
+        "script used more than {} bytes of memory",
+        rules::MAX_LUA_MEMORY_BYTES
+    )
+}
+
+/// Run whatever the executor was last restarted with, on a budget.
+///
+/// The VM is stepped a slice at a time. After each slice the heap is checked
+/// against the cap and the slice is paid for: one unit of fuel per unit the
+/// VM charged, times one more for every [`rules::FUEL_MEMORY_UNIT`] bytes the
+/// script holds.
+fn run(lua: &mut Lua, executor: &StashedExecutor, floor: usize, budget: i32) -> Result<(), Stop> {
+    let mut left = i64::from(budget);
+    loop {
+        let slice = left.clamp(1, i64::from(rules::FUEL_SLICE)) as i32;
+        let mut fuel = Fuel::with(slice);
+        let finished = lua.enter(|ctx| ctx.fetch(executor).step(ctx, &mut fuel));
+        // A slice may overrun a little; `remaining` is negative then.
+        let used = i64::from(slice) - i64::from(fuel.remaining());
+
+        let memory = lua.total_memory();
+        if memory > rules::MAX_LUA_MEMORY_BYTES {
+            // Only what is still reachable counts against the cap.
+            lua.gc_collect();
+            if lua.total_memory() > rules::MAX_LUA_MEMORY_BYTES {
+                return Err(Stop::Memory);
+            }
+        }
+        let held = memory.saturating_sub(floor) / rules::FUEL_MEMORY_UNIT;
+        left = left.saturating_sub(used.saturating_mul(1 + held as i64));
+
+        if finished {
+            return Ok(());
+        }
+        if left <= 0 {
+            return Err(Stop::Fuel);
+        }
+    }
+}
+
+/// Refuse compiled code that could build a huge string in a few instructions:
+/// any use of `..`, and string literals longer than
+/// [`rules::MAX_STRING_LITERAL_BYTES`]. With those gone, no string a script
+/// can get hold of is longer than that limit.
+fn check_prototype(prototype: &FunctionPrototype) -> Result<(), String> {
+    for constant in prototype.constants.iter() {
+        if let Constant::String(string) = constant
+            && string.as_bytes().len() > rules::MAX_STRING_LITERAL_BYTES
+        {
+            return Err(format!(
+                "string literals may be at most {} bytes long",
+                rules::MAX_STRING_LITERAL_BYTES
+            ));
+        }
+    }
+    for opcode in prototype.opcodes.iter() {
+        if let Operation::Concat { .. } = opcode.decode() {
+            return Err("string concatenation (`..`) is not available to bots".into());
+        }
+    }
+    prototype
+        .prototypes
+        .iter()
+        .try_for_each(|nested| check_prototype(nested))
 }
 
 /// Check that a script compiles, loads within budget and defines `tick`.
@@ -130,22 +240,27 @@ pub fn validate_script(source: &str) -> Result<(), String> {
 fn run_chunk(
     lua: &mut Lua,
     executor: &StashedExecutor,
+    floor: usize,
     name: &str,
     source: &str,
 ) -> Result<(), String> {
     lua.enter(|ctx| {
         let closure =
             Closure::load(ctx, Some(name), source.as_bytes()).map_err(|err| err.to_string())?;
+        check_prototype(&closure.prototype())?;
         ctx.fetch(executor).restart(ctx, closure.into(), ());
         Ok::<(), String>(())
     })?;
 
-    let mut fuel = Fuel::with(rules::INIT_FUEL);
-    if !lua.enter(|ctx| ctx.fetch(executor).step(ctx, &mut fuel)) {
-        return Err(format!(
-            "top-level code used more than {} instructions",
-            rules::INIT_FUEL
-        ));
+    match run(lua, executor, floor, rules::INIT_FUEL) {
+        Ok(()) => {}
+        Err(Stop::Fuel) => {
+            return Err(format!(
+                "top-level code ran out of its budget of {} instructions",
+                rules::INIT_FUEL
+            ));
+        }
+        Err(Stop::Memory) => return Err(out_of_memory()),
     }
 
     lua.enter(|ctx| match ctx.fetch(executor).take_result::<Value>(ctx) {
@@ -156,7 +271,7 @@ fn run_chunk(
 }
 
 /// The `state` table handed to `tick`. Keep this in sync with the agent's
-/// system prompt in the server (`server/src/agent.rs`).
+/// system prompt (`worker/src/llm.ts`).
 fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
     let state = Table::new(&ctx);
     set(ctx, state, "tick", view.tick as i64);

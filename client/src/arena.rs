@@ -5,7 +5,7 @@
 //! two neighbouring frames and move one sphere per bot accordingly.
 
 use bevy::prelude::*;
-use promptnite_bindings::*;
+use promptnite_bindings::{sdk::Table, *};
 
 use crate::{
     net::Conn,
@@ -21,11 +21,6 @@ pub struct Replay {
     pub phase_elapsed: f32,
     /// `(room, round, phase)` we last saw, and the app time when it changed.
     seen: Option<(u32, u32, Phase, f64)>,
-}
-
-/// Primary key of a `frame` row. Must match `frame_key` in the server module.
-fn frame_key(room_id: u32, tick: u32) -> u64 {
-    (room_id as u64) << 32 | tick as u64
 }
 
 pub struct BotView {
@@ -165,11 +160,24 @@ pub fn replay(
     };
 
     let Some(conn) = conn else { return };
-    let frames = conn.db().frame();
-    let Some(from) = frames.key().find(&frame_key(room.id, tick.floor() as u32)) else {
+    // The server hands the frames out when the fight starts; until they are
+    // here there is nothing to draw past the opening one.
+    let (floor, ceil) = (tick.floor() as u32, tick.ceil() as u32);
+    let (mut from, mut to) = (None, None);
+    for frame in conn.db().match_frames().iter() {
+        if frame.room_id != room.id {
+            continue; // left over from a room we just left
+        }
+        if frame.tick == ceil {
+            to = Some(frame.clone());
+        }
+        if frame.tick == floor {
+            from = Some(frame);
+        }
+    }
+    let Some(from) = from else {
         return;
     };
-    let to = frames.key().find(&frame_key(room.id, tick.ceil() as u32));
     let blend = tick.fract();
 
     for bot in &from.bots {
