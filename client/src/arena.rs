@@ -154,6 +154,32 @@ fn spawn_building(
     }
 }
 
+/// The sky: a backdrop hung far behind everything else, attached to the
+/// camera so it always fills the view, fading from light blue at the bottom
+/// of the screen to deep blue at the top.
+fn sky(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> impl Bundle {
+    // At 500 m a 45° view is about 415 m tall. Just a little taller, so the
+    // ends of the fade land at the screen edges with room for the sway, and
+    // wide enough for any window shape.
+    const DISTANCE: f32 = 500.0;
+    let (bottom, top) = (
+        theme::BACKGROUND.to_linear().to_f32_array(),
+        theme::SKY_TOP.to_linear().to_f32_array(),
+    );
+    // Rectangle vertices: top right, top left, bottom left, bottom right.
+    let mesh = Mesh::from(Rectangle::new(4000.0, 440.0))
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![top, top, bottom, bottom]);
+    (
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            unlit: true,
+            fog_enabled: false,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, -DISTANCE),
+    )
+}
+
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -194,6 +220,7 @@ fn setup(
             },
             ..default()
         },
+        children![sky(&mut meshes, &mut materials)],
     ));
 
     commands.insert_resource(BotAssets {
