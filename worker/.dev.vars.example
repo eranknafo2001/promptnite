@@ -3,3 +3,5 @@ AGENT_SECRET=dev-secret
 # One of:
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
+# Optional: ship logs to Axiom (an API token that may ingest into the dataset).
+AXIOM_TOKEN=

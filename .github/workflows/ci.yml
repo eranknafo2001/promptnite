@@ -102,6 +102,8 @@ jobs:
           # Unset (pull requests) keeps the local-development defaults.
           if [ -n "$DEFAULT_URI" ]; then export PROMPTNITE_DEFAULT_URI="$DEFAULT_URI"; fi
           if [ -n "$DEFAULT_DB" ]; then export PROMPTNITE_DEFAULT_DB="$DEFAULT_DB"; fi
+          # Shows up on the client's log events, see client/src/logs.rs.
+          export PROMPTNITE_BUILD="${GITHUB_SHA::7}"
           # Relative paths, so the build also works from a subfolder (itch.io).
           trunk build --release --public-url ./
       - uses: actions/upload-artifact@v7

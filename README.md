@@ -73,6 +73,49 @@ module can't reach it there. Give it a public address with a tunnel, for
 example `cloudflared tunnel --url http://127.0.0.1:8787`, and publish with
 `AGENT_URL` set to the tunnel's URL.
 
+## Logging
+
+The module, the worker and the client can send their logs to one
+[Axiom](https://axiom.co) dataset, so a prompt can be followed from the
+player's screen through the module to the model and back. It is off until
+there is a token:
+
+1. Create an Axiom account (the free plan is plenty) and a dataset named
+   `promptnite` in the **US East** region. The hosted SpacetimeDB is in
+   Virginia and gives the module half a second per request, which another
+   region may not make.
+2. Create an API token (Settings → API tokens) that may only ingest into that
+   dataset.
+3. Give it to the worker and the module as `AXIOM_TOKEN`: the repository
+   secret below for deploys, or by hand with
+   `npx wrangler secret put AXIOM_TOKEN` and `make publish AXIOM_TOKEN=…`.
+
+| Who | How its logs get there |
+| --- | --- |
+| Module | `emit(...)` in `server/src/lib.rs` stores the event; a scheduled procedure sends them a couple of seconds later |
+| Worker | `Logger` in `worker/src/log.ts`, one batch per request |
+| Client | Warnings, errors, panics and its own `info!` go to the worker's `POST /logs`, which passes them on. The token never reaches the client |
+
+Every event has `source` (`module`, `worker` or `client`), `level` and
+`message`, plus the ids that apply: `job_id`, `room_id`, `player_id`,
+`identity`. In Axiom:
+
+```
+['promptnite'] | where job_id == 42 | sort by _time asc
+['promptnite'] | where level == "error" | summarize count() by source, message
+```
+
+Things to know:
+
+- A reducer that fails takes its log events with it, because they are stored
+  in the same transaction. Those still show in `spacetime logs promptnite`.
+- Prompts are not logged, only their length.
+- The client is told where the worker is by the deploy. Elsewhere, use
+  `?log=<worker>/logs` in the browser or `PROMPTNITE_LOG_URL` on desktop
+  (`make client LOG_URL=http://127.0.0.1:8787/logs`).
+- A module on your own machine may be too far from Axiom to send in time. Its
+  events wait and are retried; `spacetime logs` has them regardless.
+
 ## CI and deploys
 
 Pull requests run [CI](.github/workflows/ci.yml): formatting, clippy and tests,
@@ -99,6 +142,7 @@ Repository secrets (Settings → Secrets and variables → Actions):
 | `AGENT_SECRET` | Any password you make up; given to both the module and the worker |
 | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | The model that writes the bots |
 | `BUTLER_API_KEY` | An itch.io API key, from itch.io → Settings → API keys |
+| `AXIOM_TOKEN` | Optional. Turns on [logging](#logging) |
 
 Repository variables. Only `ITCH_TARGET` is required; the rest show their defaults:
 
@@ -110,6 +154,8 @@ Repository variables. Only `ITCH_TARGET` is required; the rest show their defaul
 | `SPACETIMEDB_DB` | `promptnite`. Database names are shared by everyone on the host, so pick another if it is taken |
 | `AGENT_URL` | The worker's `workers.dev` address. Set it if the worker has a custom domain |
 | `PROMPTNITE_PROVIDER`, `PROMPTNITE_MODEL`, `OPENAI_BASE_URL` | Unset, see the table above |
+| `AXIOM_DATASET` | `promptnite` |
+| `AXIOM_DOMAIN` | `us-east-1.aws.edge.axiom.co`. For a dataset in the EU, `eu-central-1.aws.edge.axiom.co` |
 
 ## Layout
 

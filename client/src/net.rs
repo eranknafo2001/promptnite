@@ -198,7 +198,7 @@ fn follow_room(conn: Option<Res<Conn>>, mut subs: ResMut<Subs>, mut following: L
 
 /// A setting from `?key=value` in the page URL (browser) or an environment
 /// variable (desktop).
-fn setting(_query_key: &str, _env_key: &str) -> Option<String> {
+pub(crate) fn setting(_query_key: &str, _env_key: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         let search = web_sys::window()?.location().search().ok()?;

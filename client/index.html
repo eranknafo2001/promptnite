@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>promptnite</title>
+    <!-- Where the client sends its logs: the agent worker's /logs route.
+         Empty means nowhere. The deploy workflow fills it in. -->
+    <meta name="promptnite-log-url" content="" />
     <!-- Trunk compiles the client to wasm and injects the loader here. -->
     <link data-trunk rel="rust" data-bin="promptnite" data-wasm-opt="s" />
     <style>
