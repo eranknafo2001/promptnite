@@ -7,12 +7,14 @@ rust-version.workspace = true
 
 [dependencies]
 promptnite-bindings.workspace = true
-# Only what a small 3D game needs; skipping audio, 2D, gltf scenes and bevy_ui
-# keeps the wasm download smaller. `default_platform` includes WebGL2 support.
+# Only what a small 3D game needs; skipping audio, 2D and bevy_ui keeps the
+# wasm download smaller. `default_platform` includes WebGL2 support, `png` the
+# arena's glTF texture.
 bevy = { version = "0.20", default-features = false, features = [
     "default_app",
     "default_platform",
     "3d_bevy_render",
+    "png",
 ] }
 bevy_egui = { version = "0.43", default-features = false, features = [
     "render",

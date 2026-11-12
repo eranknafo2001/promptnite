@@ -24,11 +24,11 @@ use bevy::{
 use bevy_egui::{
     EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui,
 };
-use promptnite_bindings::{sdk::Table, *};
+use promptnite_bindings::*;
 
 use crate::{
-    arena::{ArenaCamera, Replay, bot_color},
-    net::{self, Conn, Server, Session},
+    arena::{ArenaCamera, BotView, Replay},
+    theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
 /// Must match `COUNTDOWN` in the server module. Only used for the big
@@ -52,13 +52,32 @@ const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
 const PROMPT_BOX_SHARE: f32 = 0.2;
 /// ...but never so small that a line of text and the footer don't fit.
 const PROMPT_BOX_MIN_HEIGHT: f32 = 110.0;
-/// Every text box in the flow is 80% opaque.
-const BOX_ALPHA: u8 = 204;
-const EDGE: f32 = 12.0;
 
 const ICON_SIZE: f32 = 40.0;
-/// `assets/icon.svg`: an orange rounded square with a white "P".
-const ICON_ORANGE: egui::Color32 = egui::Color32::from_rgb(0xd9, 0x77, 0x06);
+
+/// What there is to show. Filled in every frame by `net` from the server, or
+/// by `sandbox` from made-up data; the UI only reads it.
+#[derive(Resource)]
+pub enum Screen {
+    Connecting(String),
+    /// Name and room. `known_name` is what this player called themselves last
+    /// time, `error` why the server turned the last attempt down.
+    Join {
+        known_name: Option<String>,
+        error: Option<String>,
+    },
+    /// Joined, waiting for the server to put us in the room.
+    Entering,
+    Room(Box<Snapshot>),
+}
+
+/// What the player asked for. Carried out by `net` (or `sandbox`).
+#[derive(Message, Clone)]
+pub enum Action {
+    Join { name: String, room: String },
+    SubmitPrompt(String),
+    SetRoomSettings { match_secs: u32, house_bot: bool },
+}
 
 #[derive(Resource, Default)]
 struct Form {
@@ -83,6 +102,7 @@ enum Field {
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin::default())
+        .add_message::<Action>()
         .insert_resource(Form {
             mac: is_mac(),
             ..default()
@@ -124,45 +144,21 @@ fn is_mac() -> bool {
     }
 }
 
-/// Everything the UI needs, read from the SDK cache once per frame.
-/// `None` until the player is in a room.
-struct Snapshot {
-    game: Room,
-    /// Everyone in the room, online or not.
-    players: Vec<Player>,
-    submissions: Vec<Submission>,
-    faults: Vec<MatchFault>,
-    me: Player,
+/// The room we are in and everything in it.
+pub struct Snapshot {
+    pub game: Room,
+    /// Everyone in the room, online or not, by id.
+    pub players: Vec<Player>,
+    /// This round's.
+    pub submissions: Vec<Submission>,
+    pub faults: Vec<MatchFault>,
+    pub me: Player,
+    /// Why the server would not take our last prompt at all (sent too soon
+    /// after the one before, the agents are busy, ...).
+    pub prompt_refusal: Option<String>,
 }
 
 impl Snapshot {
-    fn read(conn: &Conn) -> Option<Self> {
-        let db = conn.db();
-        let (me, game) = net::my_room(conn)?;
-        // The cache can briefly hold rows of a room we just left.
-        let mut players: Vec<Player> = db
-            .player()
-            .iter()
-            .filter(|player| player.room_id == game.id)
-            .collect();
-        players.sort_by_key(|player| player.id);
-        Some(Self {
-            submissions: db
-                .submission()
-                .iter()
-                .filter(|s| s.room_id == game.id && s.round == game.round)
-                .collect(),
-            faults: db
-                .match_fault()
-                .iter()
-                .filter(|fault| fault.room_id == game.id)
-                .collect(),
-            game,
-            players,
-            me,
-        })
-    }
-
     fn i_own_the_room(&self) -> bool {
         self.game.owner == self.me.id
     }
@@ -198,14 +194,18 @@ impl Snapshot {
 fn draw(
     mut contexts: EguiContexts,
     mut form: ResMut<Form>,
-    mut session: ResMut<Session>,
-    conn: Option<Res<Conn>>,
-    server: Res<Server>,
+    screen: Res<Screen>,
+    mut actions: MessageWriter<Action>,
     replay: Res<Replay>,
     camera: Single<(&Camera, &GlobalTransform), With<ArenaCamera>>,
+    mut fonts_set: Local<bool>,
 ) -> Result {
     let ctx = &*contexts.ctx_mut()?;
-    let screen = ctx.viewport_rect();
+    if !*fonts_set {
+        theme::set_fonts(ctx);
+        *fonts_set = true;
+    }
+    let screen_rect = ctx.viewport_rect();
     let background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("arena_overlay"),
@@ -213,45 +213,51 @@ fn draw(
     let centred = |text: String| {
         shadowed_text(
             &background,
-            screen.center(),
+            screen_rect.center(),
             text,
-            16.0,
-            egui::Color32::WHITE,
+            theme::SIZE_BODY,
+            theme::TEXT,
         )
     };
 
-    let Some(conn) = conn.as_deref().filter(|conn| conn.is_active()) else {
-        icon(&background, screen);
-        centred(format!("Connecting to {} …", server.uri));
-        return Ok(());
-    };
-    let Some(snapshot) = Snapshot::read(conn) else {
-        icon(&background, screen);
-        if session.has_joined() {
-            centred("Entering the room…".into());
-        } else {
-            join_screen(ctx, conn, &mut form, &mut session);
+    let snapshot = match &*screen {
+        Screen::Connecting(uri) => {
+            icon(&background, screen_rect);
+            centred(format!("Connecting to {uri} …"));
+            return Ok(());
         }
-        return Ok(());
+        Screen::Entering => {
+            icon(&background, screen_rect);
+            centred("Entering the room…".into());
+            return Ok(());
+        }
+        Screen::Join { known_name, error } => {
+            icon(&background, screen_rect);
+            join_screen(ctx, known_name, error, &mut form, &mut actions);
+            return Ok(());
+        }
+        Screen::Room(snapshot) => snapshot,
     };
+    let screen = screen_rect;
 
     let (camera, camera_transform) = *camera;
-    bot_labels(&background, &snapshot, &replay, camera, camera_transform);
-    banner(&background, screen, &snapshot, &replay);
+    bot_markers(&background, &replay, camera, camera_transform);
+    bot_cards(&background, screen, snapshot, &replay);
+    banner(&background, screen, snapshot, &replay);
     icon(&background, screen);
     let clock = match_timer(&background, screen, &snapshot.game, &replay);
-    faults(ctx, &snapshot, &replay, clock);
-    roster(&background, screen, &snapshot, &replay);
+    faults(ctx, snapshot, &replay, clock);
+    roster(&background, screen, snapshot, &replay);
 
     let game = &snapshot.game;
     if game.phase == Phase::Prompting && snapshot.i_own_the_room() {
-        room_settings(ctx, conn, game);
+        room_settings(ctx, game, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
     match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
-            prompt_box(ctx, screen, conn, &snapshot, error, &mut form);
+            prompt_box(ctx, screen, snapshot, error, &mut form, &mut actions);
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
             status_line(ctx, true, "Your agent is building your bot…");
@@ -287,7 +293,7 @@ fn icon(painter: &egui::Painter, screen: egui::Rect) {
     // Everything below is in the SVG's 64 unit square.
     let unit = ICON_SIZE / 64.0;
     let at = |x: f32, y: f32| rect.min + egui::vec2(x, y) * unit;
-    painter.rect_filled(rect, 14.0 * unit, ICON_ORANGE);
+    painter.rect_filled(rect, 14.0 * unit, theme::ICON_ORANGE);
 
     // The "P": a stem, and a bowl that is rounded on the right only.
     let white = egui::Color32::WHITE;
@@ -309,28 +315,21 @@ fn icon(painter: &egui::Painter, screen: egui::Rect) {
     );
 }
 
-fn box_fill() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(16, 18, 23, BOX_ALPHA)
-}
-
-/// The look shared by every text box: dark, 80% opaque, thin light outline.
-fn box_frame() -> egui::Frame {
-    egui::Frame::new()
-        .fill(box_fill())
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(45)))
-        .corner_radius(10)
-        .inner_margin(10)
-}
-
 /// First screen, on every launch: who are you, and which room?
-fn join_screen(ctx: &egui::Context, conn: &Conn, form: &mut Form, session: &mut Session) {
+fn join_screen(
+    ctx: &egui::Context,
+    known_name: &Option<String>,
+    error: &Option<String>,
+    form: &mut Form,
+    actions: &mut MessageWriter<Action>,
+) {
     // Returning players get their old name suggested.
     if !form.prefilled
-        && let Some(me) = net::me(conn)
+        && let Some(known) = known_name
     {
         form.prefilled = true;
         if form.name.is_empty() {
-            form.name = me.name;
+            form.name = known.clone();
         }
     }
 
@@ -341,8 +340,8 @@ fn join_screen(ctx: &egui::Context, conn: &Conn, form: &mut Form, session: &mut 
             ui.vertical_centered(|ui| {
                 ui.label(
                     egui::RichText::new("Who's playing, and where?")
-                        .size(24.0)
-                        .color(egui::Color32::WHITE),
+                        .size(theme::SIZE_TITLE)
+                        .color(theme::TEXT),
                 );
                 ui.add_space(12.0);
 
@@ -360,16 +359,16 @@ fn join_screen(ctx: &egui::Context, conn: &Conn, form: &mut Form, session: &mut 
                         "Everyone who enters the same room id plays together.\n\
                          Press Enter to play",
                     )
-                    .size(13.0)
-                    .color(egui::Color32::from_white_alpha(170)),
+                    .size(theme::SIZE_LABEL)
+                    .color(theme::TEXT_HINT),
                 );
                 // Why the server turned the last attempt away (room full).
-                if let Some(error) = &session.error {
+                if let Some(error) = error {
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(error)
-                            .size(13.0)
-                            .color(egui::Color32::LIGHT_RED),
+                            .size(theme::SIZE_LABEL)
+                            .color(theme::BAD),
                     );
                 }
 
@@ -383,7 +382,10 @@ fn join_screen(ctx: &egui::Context, conn: &Conn, form: &mut Form, session: &mut 
                     } else if at.is_empty() {
                         room.request_focus();
                     } else {
-                        session.join(who.to_string(), at.to_string());
+                        actions.write(Action::Join {
+                            name: who.to_string(),
+                            room: at.to_string(),
+                        });
                     }
                 }
             });
@@ -396,8 +398,8 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
         egui::TextEdit::singleline(text)
             .hint_text(hint.to_owned())
             .char_limit(limit)
-            .font(egui::FontId::proportional(18.0))
-            .text_color(egui::Color32::WHITE)
+            .font(egui::FontId::proportional(theme::SIZE_FIELD))
+            .text_color(theme::TEXT)
             .horizontal_align(egui::Align::Center)
             .desired_width(f32::INFINITY)
             .frame(box_frame()),
@@ -409,10 +411,10 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
 fn prompt_box(
     ctx: &egui::Context,
     screen: egui::Rect,
-    conn: &Conn,
     snapshot: &Snapshot,
     error: Option<&str>,
     form: &mut Form,
+    actions: &mut MessageWriter<Action>,
 ) {
     let height = (screen.height() * PROMPT_BOX_SHARE).max(PROMPT_BOX_MIN_HEIGHT);
     let outer = egui::Rect::from_min_max(
@@ -447,8 +449,8 @@ fn prompt_box(
                             egui::TextEdit::multiline(&mut form.prompt)
                                 .hint_text("Tell your agent how your bot should fight…")
                                 .char_limit(MAX_PROMPT_CHARS)
-                                .font(egui::FontId::proportional(16.0))
-                                .text_color(egui::Color32::WHITE)
+                                .font(egui::FontId::proportional(theme::SIZE_BODY))
+                                .text_color(theme::TEXT)
                                 .desired_width(f32::INFINITY)
                                 .min_size(egui::vec2(0.0, text_height))
                                 // The box around it is already drawn.
@@ -481,13 +483,19 @@ fn prompt_box(
 
                 let prompt = form.prompt.trim();
                 if (shortcut || clicked) && !prompt.is_empty() {
-                    report(conn.reducers().submit_prompt(prompt.to_string()));
+                    actions.write(Action::SubmitPrompt(prompt.to_string()));
                 }
             });
         });
 
-    // Why the last prompt didn't work out, right above the box.
-    if let Some(error) = error.filter(|error| !error.is_empty()) {
+    // Why the last prompt didn't work out, right above the box. A prompt the
+    // server would not take at all comes before one whose agent failed.
+    if let Some(error) = snapshot
+        .prompt_refusal
+        .as_deref()
+        .or(error)
+        .filter(|error| !error.is_empty())
+    {
         egui::Area::new(egui::Id::new("prompt_error"))
             .anchor(
                 egui::Align2::LEFT_BOTTOM,
@@ -499,8 +507,8 @@ fn prompt_box(
                 pill(ui, |ui| {
                     ui.label(
                         egui::RichText::new(error)
-                            .size(13.0)
-                            .color(egui::Color32::LIGHT_RED),
+                            .size(theme::SIZE_LABEL)
+                            .color(theme::BAD),
                     );
                 });
             });
@@ -509,22 +517,25 @@ fn prompt_box(
 
 /// The room's settings, top left. Only the owner gets them, and only while
 /// prompting: that is when the next match is still to be set up.
-fn room_settings(ctx: &egui::Context, conn: &Conn, game: &Room) {
+fn room_settings(ctx: &egui::Context, game: &Room, actions: &mut MessageWriter<Action>) {
     egui::Area::new(egui::Id::new("room_settings"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
                 ui.label(
                     egui::RichText::new("Room settings")
-                        .size(13.0)
-                        .color(egui::Color32::WHITE),
+                        .size(theme::SIZE_LABEL)
+                        .color(theme::TEXT),
                 );
                 ui.horizontal(|ui| {
                     ui.label(small("Match length"));
                     for secs in MATCH_LENGTHS {
                         let chosen = game.match_secs == secs;
                         if ui.selectable_label(chosen, format!("{secs} s")).clicked() && !chosen {
-                            report(conn.reducers().set_room_settings(secs, game.house_bot));
+                            actions.write(Action::SetRoomSettings {
+                                match_secs: secs,
+                                house_bot: game.house_bot,
+                            });
                         }
                     }
                 });
@@ -533,28 +544,13 @@ fn room_settings(ctx: &egui::Context, conn: &Conn, game: &Room) {
                     .checkbox(&mut house_bot, "House bot joins the fight")
                     .changed()
                 {
-                    report(
-                        conn.reducers()
-                            .set_room_settings(game.match_secs, house_bot),
-                    );
+                    actions.write(Action::SetRoomSettings {
+                        match_secs: game.match_secs,
+                        house_bot,
+                    });
                 }
             });
         });
-}
-
-fn small(text: &str) -> egui::RichText {
-    egui::RichText::new(text)
-        .size(12.5)
-        .color(egui::Color32::from_white_alpha(150))
-}
-
-/// A dark rounded backdrop that keeps a line of text readable on the arena.
-fn pill(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(egui::Color32::from_black_alpha(150))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(10, 5))
-        .show(ui, content);
 }
 
 /// One line at the bottom while there is nothing to type.
@@ -570,8 +566,8 @@ fn status_line(ctx: &egui::Context, busy: bool, text: &str) {
                     }
                     ui.label(
                         egui::RichText::new(text)
-                            .size(14.0)
-                            .color(egui::Color32::WHITE),
+                            .size(theme::SIZE_STATUS)
+                            .color(theme::TEXT),
                     );
                 });
             });
@@ -591,12 +587,17 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
     const PADDING: egui::Vec2 = egui::vec2(10.0, 7.0);
 
     let game = &snapshot.game;
-    let muted = egui::Color32::from_white_alpha(150);
+    let muted = theme::TEXT_MUTED;
     let left = |text: String| {
-        painter.layout_no_wrap(text, egui::FontId::proportional(13.0), egui::Color32::WHITE)
+        painter.layout_no_wrap(
+            text,
+            egui::FontId::proportional(theme::SIZE_LABEL),
+            theme::TEXT,
+        )
     };
-    let right =
-        |text: String, color| painter.layout_no_wrap(text, egui::FontId::proportional(12.5), color);
+    let right = |text: String, color| {
+        painter.layout_no_wrap(text, egui::FontId::proportional(theme::SIZE_SMALL), color)
+    };
 
     // First the room and its settings, then one row per player. A row
     // without a colour has no dot and starts at the left edge.
@@ -657,7 +658,7 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         egui::pos2(screen.right() - EDGE - size.x, screen.top() + EDGE),
         size,
     );
-    painter.rect_filled(outer, 8.0, egui::Color32::from_black_alpha(150));
+    painter.rect_filled(outer, theme::PILL_RADIUS, theme::PILL_FILL);
 
     let mut y = outer.top() + PADDING.y;
     for (color, name, state) in rows {
@@ -676,8 +677,8 @@ fn roster(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
             x + DOT + GAP + name_width + COLUMN_GAP,
             middle - state.size().y / 2.0,
         );
-        painter.galley(name_at, name, egui::Color32::WHITE);
-        painter.galley(state_at, state, egui::Color32::WHITE);
+        painter.galley(name_at, name, theme::TEXT);
+        painter.galley(state_at, state, theme::TEXT);
         y += row_height + ROW_GAP;
     }
 }
@@ -690,9 +691,7 @@ fn bot_state(
     id: u32,
     status: Option<SubmissionStatus>,
 ) -> (&'static str, egui::Color32) {
-    let muted = egui::Color32::from_white_alpha(150);
-    let good = egui::Color32::LIGHT_GREEN;
-    let bad = egui::Color32::LIGHT_RED;
+    let (muted, good, bad) = (theme::TEXT_MUTED, theme::GOOD, theme::BAD);
     let in_match = replay.bots.iter().find(|bot| bot.id == id);
     let down = in_match.is_some_and(|bot| bot.action == BotAction::Dead);
 
@@ -708,7 +707,7 @@ fn bot_state(
         (Phase::Countdown, _) => ("ready", good),
         (Phase::Results, _) if game.winner == Some(id) => ("won", good),
         (Phase::Fighting | Phase::Results, _) if down => ("knocked out", bad),
-        (Phase::Fighting, _) => ("fighting", egui::Color32::WHITE),
+        (Phase::Fighting, _) => ("fighting", theme::TEXT),
         (Phase::Results, _) => ("still standing", muted),
     }
 }
@@ -737,15 +736,15 @@ fn match_timer(
     // Monospace, so the box doesn't change width as the digits do.
     let text = painter.layout_no_wrap(
         format!("{}:{:02}", left / 60, left % 60),
-        egui::FontId::monospace(20.0),
-        egui::Color32::WHITE,
+        egui::FontId::monospace(theme::SIZE_TIMER),
+        theme::TEXT,
     );
     let outer = egui::Rect::from_min_size(
         screen.min + egui::Vec2::splat(EDGE),
         text.size() + PADDING * 2.0,
     );
-    painter.rect_filled(outer, 8.0, egui::Color32::from_black_alpha(150));
-    painter.galley(outer.min + PADDING, text, egui::Color32::WHITE);
+    painter.rect_filled(outer, theme::PILL_RADIUS, theme::PILL_FILL);
+    painter.galley(outer.min + PADDING, text, theme::TEXT);
     Some(outer)
 }
 
@@ -783,18 +782,12 @@ fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay, clock: Opti
                     };
                     ui.label(
                         egui::RichText::new(format!("{whose} broke down: {}", fault.message))
-                            .size(12.5)
-                            .color(egui::Color32::LIGHT_RED),
+                            .size(theme::SIZE_SMALL)
+                            .color(theme::BAD),
                     );
                 }
             });
         });
-}
-
-fn report<E: std::fmt::Display>(result: Result<(), E>) {
-    if let Err(err) = result {
-        warn!("could not call reducer: {err}");
-    }
 }
 
 fn shadowed_text(
@@ -811,49 +804,103 @@ fn shadowed_text(
         egui::Align2::CENTER_CENTER,
         &text,
         font.clone(),
-        egui::Color32::from_black_alpha(200),
+        theme::TEXT_SHADOW,
     );
     painter.text(at, egui::Align2::CENTER_CENTER, text, font, color);
 }
 
-/// Name and health bar floating above every bot.
-fn bot_labels(
+/// A down-pointing triangle in the bot's colour floating above every bot
+/// still standing.
+fn bot_markers(
     painter: &egui::Painter,
-    snapshot: &Snapshot,
     replay: &Replay,
     camera: &Camera,
     camera_transform: &GlobalTransform,
 ) {
-    for bot in &replay.bots {
+    const WIDTH: f32 = 16.0;
+    const HEIGHT: f32 = 12.0;
+
+    for bot in replay
+        .bots
+        .iter()
+        .filter(|bot| bot.action != BotAction::Dead)
+    {
         let above = bot.position + Vec3::Y * (bot.radius * 2.2);
         // The arena camera covers the whole window, so its viewport
         // coordinates are egui coordinates.
-        let Ok(at) = camera.world_to_viewport(camera_transform, above) else {
+        let Ok(tip) = camera.world_to_viewport(camera_transform, above) else {
             continue;
         };
-        let at = egui::pos2(at.x, at.y);
-        let alive = bot.action != BotAction::Dead;
+        let tip = egui::pos2(tip.x, tip.y);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                tip,
+                tip + egui::vec2(-WIDTH / 2.0, -HEIGHT),
+                tip + egui::vec2(WIDTH / 2.0, -HEIGHT),
+            ],
+            fill_of(bot),
+            egui::Stroke::new(1.5, theme::TEXT_SHADOW),
+        ));
+    }
+}
 
+fn fill_of(bot: &BotView) -> egui::Color32 {
+    if bot.action == BotAction::Dead {
+        theme::TEXT_DEAD
+    } else {
+        let [r, g, b] = bot_color(bot.id);
+        egui::Color32::from_rgb(r, g, b)
+    }
+}
+
+/// One card per bot in the match down the left side, vertically centred:
+/// colour dot and name, health bar underneath.
+///
+/// Painted directly, like the roster, so the cards don't jump a frame when
+/// a name changes length.
+fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
+    const WIDTH: f32 = 180.0;
+    const HEIGHT: f32 = 44.0;
+    const GAP: f32 = 8.0;
+    const DOT: f32 = 10.0;
+    const PADDING: egui::Vec2 = egui::vec2(10.0, 8.0);
+
+    let count = replay.bots.len() as f32;
+    let mut top = screen.center().y - (count * (HEIGHT + GAP) - GAP) / 2.0;
+    for bot in &replay.bots {
+        let card = egui::Rect::from_min_size(
+            egui::pos2(screen.left() + EDGE, top),
+            egui::vec2(WIDTH, HEIGHT),
+        );
+        top += HEIGHT + GAP;
+        painter.rect_filled(card, theme::PILL_RADIUS, theme::PILL_FILL);
+
+        let inner = card.shrink2(PADDING);
+        let alive = bot.action != BotAction::Dead;
+        let name_y = inner.top() + 7.0;
+        painter.circle_filled(
+            egui::pos2(inner.left() + DOT / 2.0, name_y),
+            DOT / 2.0,
+            fill_of(bot),
+        );
         painter.text(
-            at - egui::vec2(0.0, 8.0),
-            egui::Align2::CENTER_BOTTOM,
+            egui::pos2(inner.left() + DOT + 6.0, name_y),
+            egui::Align2::LEFT_CENTER,
             snapshot.name_of(bot.id),
-            egui::FontId::proportional(14.0),
-            if alive {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::GRAY
-            },
+            egui::FontId::proportional(theme::SIZE_BOT_NAME),
+            if alive { theme::TEXT } else { theme::TEXT_DEAD },
         );
 
-        let bar = egui::Rect::from_center_size(at, egui::vec2(46.0, 5.0));
-        painter.rect_filled(bar, 2.0, egui::Color32::from_black_alpha(160));
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), inner.bottom() - 6.0),
+            inner.right_bottom(),
+        );
+        painter.rect_filled(bar, 3.0, theme::HP_TRACK);
         let health = (bot.hp as f32 / snapshot.game.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            let [r, g, b] = bot_color(bot.id);
             let filled =
                 egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height()));
-            painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(r, g, b));
+            painter.rect_filled(filled, 3.0, fill_of(bot));
         }
     }
 }
@@ -873,5 +920,5 @@ fn banner(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, repl
         Phase::Fighting | Phase::Prompting => return,
     };
     let at = screen.center_top() + egui::vec2(0.0, screen.height() * 0.2);
-    shadowed_text(painter, at, text, 64.0, egui::Color32::WHITE);
+    shadowed_text(painter, at, text, theme::SIZE_BANNER, theme::TEXT);
 }

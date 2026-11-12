@@ -86,7 +86,8 @@ Globals persist between ticks, so a script can remember things.
 - Last bot standing wins. At the time limit the bot with the most hp wins; a
   tie is a draw.
 - A script that errors or runs out of its per-tick instruction budget makes the
-  bot idle for that tick. The first error per bot is shown to everyone.
+  bot idle for that tick. One that goes over the memory limit is switched off
+  for the rest of the match. The first error per bot is shown to everyone.
 
 ## Screen layout
 
@@ -151,8 +152,16 @@ Decisions worth knowing about:
   set of scripts and seed.
 - **Lua runs in [piccolo](https://github.com/kyren/piccolo)**, a pure-Rust Lua
   VM, because the module is WebAssembly and cannot link C Lua. Scripts get
-  `math`, `string`, `table` and the base library only, a fuel budget per tick
-  and a memory cap.
+  `math`, `string`, `table` and the base library only.
+- **A script cannot stall or crash a match.** The match runs inside one
+  reducer, so a script that hangs it hangs the database. A module has no
+  clock, so the time a tick may take is bounded by counting instead
+  (`sim/src/lua.rs`): a fuel budget per tick; a 1 MB heap cap checked every
+  few hundred instructions; fuel that costs more the more memory the script
+  holds, because one instruction can take as long as the heap is large; and
+  no string concatenation, the one operation that can allocate without bound
+  between two checks. The worst script we could write keeps a four-bot,
+  two-minute match under half a second (`sim/tests/sandbox.rs`).
 - **The agent is a Cloudflare Worker, not part of the module.** A SpacetimeDB
   module can only make HTTP calls that finish within 500 ms, far too short for
   a model to write code. So the module only *pokes* the Worker (`POST /job`,
@@ -168,14 +177,27 @@ Decisions worth knowing about:
   the submission fails and the player can prompt again.
 - **Small, fast models by default** (`claude-haiku-5-5`, `gpt-6-luna`). A bot
   script is a small task and everyone is waiting on the slowest agent.
-- **Private by default.** Prompts and scripts are in private tables that no
-  client can read, their owner included. Clients only see the public
-  `submission` status (generating, ready, or failed and why).
+- **Only the agent hands in scripts.** `deliver_script` needs `AGENT_SECRET`
+  and there is no other way in, so every bot in a match was written from a
+  prompt.
+- **Every table is private.** Clients read through views that answer for the
+  caller: their own player row, and the room they are in (`my_room`,
+  `room_players`, `room_submissions`, `match_frames`, `match_faults`). There
+  is no query that returns another room's rows. Prompts and scripts are in
+  no view at all, so nobody can read them, their owner included.
+- **A match is held back until its fight starts.** It is simulated when the
+  last script arrives, but during the countdown `match_frames` holds only the
+  opening frame, and the match length and script errors are hidden too. The
+  winner is not in the room's row until the results. Once the fight starts
+  the client does hold the whole replay; nothing can be changed by then.
+- **Prompts are rate-limited.** A player may send one a second. Identities
+  are free to make, so what protects the model API key is a budget for the
+  whole database, sized for 50 people playing at once: 300 model calls a
+  minute and 30,000 a day, retries included
+  (`MAX_AGENT_CALLS_PER_MINUTE`, `MAX_AGENT_CALLS_PER_DAY`). Over it, prompts
+  are turned away with "the agents are busy".
 - **A house bot** (the reference chaser) fights in every match unless the
   room's owner switches it off, so the loop can be played solo.
-- **Clients only subscribe to their own room.** Every room-scoped table has a
-  `room_id` column and the client filters its subscriptions on it, so one
-  room's match frames are never sent to another room's players.
 
 ## Open questions
 
@@ -183,9 +205,9 @@ Decisions worth knowing about:
   running?) or it simply replaces walk.
 - **Prompt deadline**: a round currently waits for every online player. One
   idle player stalls the room. Add a timer and a default bot?
-- **Peeking**: match frames are public the moment the match is simulated,
-  i.e. during the countdown. A modified client could read the result early.
-  Fine while it is friends playing; fix by revealing frames on a timer.
+- **Flooding**: the model-call budget is shared, so somebody who spends it
+  locks everyone else out until the minute (or day) is over. That caps the
+  bill, not the nuisance. Sign-in or a per-room budget would narrow it.
 - **Rooms**: anybody who knows or guesses a room id can walk in. A list of
   rooms, private rooms and matchmaking come later. Rooms are never deleted.
 - **Absent owner**: if the owner leaves while others stay, nobody can change

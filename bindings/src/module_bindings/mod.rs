@@ -6,6 +6,7 @@
 #![allow(unused, clippy::all)]
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
+pub mod agent_budget_type;
 pub mod agent_call_type;
 pub mod agent_job_type;
 pub mod bot_action_type;
@@ -13,27 +14,29 @@ pub mod bot_frame_type;
 pub mod bot_script_type;
 pub mod deliver_script_reducer;
 pub mod fail_job_reducer;
-pub mod frame_table;
 pub mod frame_type;
 pub mod job_timeout_type;
 pub mod join_reducer;
 pub mod log_event_type;
 pub mod log_shipment_type;
-pub mod match_fault_table;
 pub mod match_fault_type;
+pub mod match_faults_table;
+pub mod match_frames_table;
+pub mod my_player_table;
+pub mod my_room_table;
 pub mod phase_timer_type;
 pub mod phase_type;
-pub mod player_table;
 pub mod player_type;
-pub mod room_table;
+pub mod prompt_limit_type;
+pub mod room_players_table;
+pub mod room_submissions_table;
 pub mod room_type;
 pub mod set_room_settings_reducer;
 pub mod submission_status_type;
-pub mod submission_table;
 pub mod submission_type;
 pub mod submit_prompt_reducer;
-pub mod submit_script_reducer;
 
+pub use agent_budget_type::AgentBudget;
 pub use agent_call_type::AgentCall;
 pub use agent_job_type::AgentJob;
 pub use bot_action_type::BotAction;
@@ -41,26 +44,27 @@ pub use bot_frame_type::BotFrame;
 pub use bot_script_type::BotScript;
 pub use deliver_script_reducer::deliver_script;
 pub use fail_job_reducer::fail_job;
-pub use frame_table::*;
 pub use frame_type::Frame;
 pub use job_timeout_type::JobTimeout;
 pub use join_reducer::join;
 pub use log_event_type::LogEvent;
 pub use log_shipment_type::LogShipment;
-pub use match_fault_table::*;
 pub use match_fault_type::MatchFault;
+pub use match_faults_table::*;
+pub use match_frames_table::*;
+pub use my_player_table::*;
+pub use my_room_table::*;
 pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
-pub use player_table::*;
 pub use player_type::Player;
-pub use room_table::*;
+pub use prompt_limit_type::PromptLimit;
+pub use room_players_table::*;
+pub use room_submissions_table::*;
 pub use room_type::Room;
 pub use set_room_settings_reducer::set_room_settings;
 pub use submission_status_type::SubmissionStatus;
-pub use submission_table::*;
 pub use submission_type::Submission;
 pub use submit_prompt_reducer::submit_prompt;
-pub use submit_script_reducer::submit_script;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -91,9 +95,6 @@ pub enum Reducer {
     SubmitPrompt {
         prompt: String,
     },
-    SubmitScript {
-        script: String,
-    },
 }
 
 impl __sdk::InModule for Reducer {
@@ -108,7 +109,6 @@ impl __sdk::Reducer for Reducer {
             Reducer::Join { .. } => "join",
             Reducer::SetRoomSettings { .. } => "set_room_settings",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
-            Reducer::SubmitScript { .. } => "submit_script",
             _ => unreachable!(),
         }
     }
@@ -149,11 +149,6 @@ impl __sdk::Reducer for Reducer {
                     prompt: prompt.clone(),
                 })
             }
-            Reducer::SubmitScript { script } => {
-                __sats::bsatn::to_vec(&submit_script_reducer::SubmitScriptArgs {
-                    script: script.clone(),
-                })
-            }
             _ => unreachable!(),
         }
     }
@@ -163,11 +158,12 @@ impl __sdk::Reducer for Reducer {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct DbUpdate {
-    frame: __sdk::TableUpdate<Frame>,
-    match_fault: __sdk::TableUpdate<MatchFault>,
-    player: __sdk::TableUpdate<Player>,
-    room: __sdk::TableUpdate<Room>,
-    submission: __sdk::TableUpdate<Submission>,
+    match_faults: __sdk::TableUpdate<MatchFault>,
+    match_frames: __sdk::TableUpdate<Frame>,
+    my_player: __sdk::TableUpdate<Player>,
+    my_room: __sdk::TableUpdate<Room>,
+    room_players: __sdk::TableUpdate<Player>,
+    room_submissions: __sdk::TableUpdate<Submission>,
 }
 
 impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
@@ -176,21 +172,24 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_update in __sdk::transaction_update_iter_table_updates(raw) {
             match &table_update.table_name[..] {
-                "frame" => db_update
-                    .frame
-                    .append(frame_table::parse_table_update(table_update)?),
-                "match_fault" => db_update
-                    .match_fault
-                    .append(match_fault_table::parse_table_update(table_update)?),
-                "player" => db_update
-                    .player
-                    .append(player_table::parse_table_update(table_update)?),
-                "room" => db_update
-                    .room
-                    .append(room_table::parse_table_update(table_update)?),
-                "submission" => db_update
-                    .submission
-                    .append(submission_table::parse_table_update(table_update)?),
+                "match_faults" => db_update
+                    .match_faults
+                    .append(match_faults_table::parse_table_update(table_update)?),
+                "match_frames" => db_update
+                    .match_frames
+                    .append(match_frames_table::parse_table_update(table_update)?),
+                "my_player" => db_update
+                    .my_player
+                    .append(my_player_table::parse_table_update(table_update)?),
+                "my_room" => db_update
+                    .my_room
+                    .append(my_room_table::parse_table_update(table_update)?),
+                "room_players" => db_update
+                    .room_players
+                    .append(room_players_table::parse_table_update(table_update)?),
+                "room_submissions" => db_update
+                    .room_submissions
+                    .append(room_submissions_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -217,21 +216,14 @@ impl __sdk::DbUpdate for DbUpdate {
     ) -> AppliedDiff<'_> {
         let mut diff = AppliedDiff::default();
 
-        diff.frame = cache
-            .apply_diff_to_table::<Frame>("frame", &self.frame)
-            .with_updates_by_pk(|row| &row.key);
-        diff.match_fault = cache
-            .apply_diff_to_table::<MatchFault>("match_fault", &self.match_fault)
-            .with_updates_by_pk(|row| &row.id);
-        diff.player = cache
-            .apply_diff_to_table::<Player>("player", &self.player)
-            .with_updates_by_pk(|row| &row.identity);
-        diff.room = cache
-            .apply_diff_to_table::<Room>("room", &self.room)
-            .with_updates_by_pk(|row| &row.id);
-        diff.submission = cache
-            .apply_diff_to_table::<Submission>("submission", &self.submission)
-            .with_updates_by_pk(|row| &row.player_id);
+        diff.match_faults =
+            cache.apply_diff_to_table::<MatchFault>("match_faults", &self.match_faults);
+        diff.match_frames = cache.apply_diff_to_table::<Frame>("match_frames", &self.match_frames);
+        diff.my_player = cache.apply_diff_to_table::<Player>("my_player", &self.my_player);
+        diff.my_room = cache.apply_diff_to_table::<Room>("my_room", &self.my_room);
+        diff.room_players = cache.apply_diff_to_table::<Player>("room_players", &self.room_players);
+        diff.room_submissions =
+            cache.apply_diff_to_table::<Submission>("room_submissions", &self.room_submissions);
 
         diff
     }
@@ -239,20 +231,23 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
-                "frame" => db_update
-                    .frame
+                "match_faults" => db_update
+                    .match_faults
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "match_fault" => db_update
-                    .match_fault
+                "match_frames" => db_update
+                    .match_frames
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "player" => db_update
-                    .player
+                "my_player" => db_update
+                    .my_player
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "room" => db_update
-                    .room
+                "my_room" => db_update
+                    .my_room
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "submission" => db_update
-                    .submission
+                "room_players" => db_update
+                    .room_players
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "room_submissions" => db_update
+                    .room_submissions
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => {
                     return Err(
@@ -267,20 +262,23 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
-                "frame" => db_update
-                    .frame
+                "match_faults" => db_update
+                    .match_faults
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "match_fault" => db_update
-                    .match_fault
+                "match_frames" => db_update
+                    .match_frames
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "player" => db_update
-                    .player
+                "my_player" => db_update
+                    .my_player
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "room" => db_update
-                    .room
+                "my_room" => db_update
+                    .my_room
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "submission" => db_update
-                    .submission
+                "room_players" => db_update
+                    .room_players
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "room_submissions" => db_update
+                    .room_submissions
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => {
                     return Err(
@@ -297,11 +295,12 @@ impl __sdk::DbUpdate for DbUpdate {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
-    frame: __sdk::TableAppliedDiff<'r, Frame>,
-    match_fault: __sdk::TableAppliedDiff<'r, MatchFault>,
-    player: __sdk::TableAppliedDiff<'r, Player>,
-    room: __sdk::TableAppliedDiff<'r, Room>,
-    submission: __sdk::TableAppliedDiff<'r, Submission>,
+    match_faults: __sdk::TableAppliedDiff<'r, MatchFault>,
+    match_frames: __sdk::TableAppliedDiff<'r, Frame>,
+    my_player: __sdk::TableAppliedDiff<'r, Player>,
+    my_room: __sdk::TableAppliedDiff<'r, Room>,
+    room_players: __sdk::TableAppliedDiff<'r, Player>,
+    room_submissions: __sdk::TableAppliedDiff<'r, Submission>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -315,11 +314,20 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         event: &EventContext,
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
-        callbacks.invoke_table_row_callbacks::<Frame>("frame", &self.frame, event);
-        callbacks.invoke_table_row_callbacks::<MatchFault>("match_fault", &self.match_fault, event);
-        callbacks.invoke_table_row_callbacks::<Player>("player", &self.player, event);
-        callbacks.invoke_table_row_callbacks::<Room>("room", &self.room, event);
-        callbacks.invoke_table_row_callbacks::<Submission>("submission", &self.submission, event);
+        callbacks.invoke_table_row_callbacks::<MatchFault>(
+            "match_faults",
+            &self.match_faults,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<Frame>("match_frames", &self.match_frames, event);
+        callbacks.invoke_table_row_callbacks::<Player>("my_player", &self.my_player, event);
+        callbacks.invoke_table_row_callbacks::<Room>("my_room", &self.my_room, event);
+        callbacks.invoke_table_row_callbacks::<Player>("room_players", &self.room_players, event);
+        callbacks.invoke_table_row_callbacks::<Submission>(
+            "room_submissions",
+            &self.room_submissions,
+            event,
+        );
     }
 }
 
@@ -980,12 +988,19 @@ impl __sdk::SpacetimeModule for RemoteModule {
     type QueryBuilder = __sdk::QueryBuilder;
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
-        frame_table::register_table(client_cache);
-        match_fault_table::register_table(client_cache);
-        player_table::register_table(client_cache);
-        room_table::register_table(client_cache);
-        submission_table::register_table(client_cache);
+        match_faults_table::register_table(client_cache);
+        match_frames_table::register_table(client_cache);
+        my_player_table::register_table(client_cache);
+        my_room_table::register_table(client_cache);
+        room_players_table::register_table(client_cache);
+        room_submissions_table::register_table(client_cache);
     }
-    const ALL_TABLE_NAMES: &'static [&'static str] =
-        &["frame", "match_fault", "player", "room", "submission"];
+    const ALL_TABLE_NAMES: &'static [&'static str] = &[
+        "match_faults",
+        "match_frames",
+        "my_player",
+        "my_room",
+        "room_players",
+        "room_submissions",
+    ];
 }

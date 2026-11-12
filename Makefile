@@ -3,6 +3,8 @@
 #   make server     local SpacetimeDB
 #   make publish    build + upload the module (again after changing server/ or sim/)
 #   make client     desktop client      |  make web   browser client
+#   make sandbox    every screen with made-up data, no server (design work;
+#                   in the browser: make web, then open /?sandbox)
 #   make worker     the agent (Cloudflare Worker) on http://127.0.0.1:8787
 #
 # Without AGENT_URL the module hands every prompt the example bot. To use the
@@ -24,7 +26,7 @@ AGENT_URL    ?=
 AXIOM_TOKEN  ?=
 LOG_URL      ?=
 
-.PHONY: server publish bindings worker worker-deploy client web web-release test
+.PHONY: server publish bindings worker worker-deploy client sandbox web web-release test
 
 server:
 	spacetime start --listen-addr $(STDB_ADDR)
@@ -48,6 +50,9 @@ worker-deploy:
 
 client:
 	PROMPTNITE_URI=http://$(STDB_ADDR) PROMPTNITE_DB=$(DB) PROMPTNITE_LOG_URL=$(LOG_URL) cargo run -p promptnite
+
+sandbox:
+	cargo run -p promptnite -- --sandbox
 
 # Needs `cargo install --locked trunk`. Serves http://127.0.0.1:8080
 web:

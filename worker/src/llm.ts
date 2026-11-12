@@ -17,6 +17,13 @@ const OPENAI_BASE_URL = "https://api.openai.com/v1";
  * Give up on the model before that, so there is time left to report it.
  */
 const MODEL_TIMEOUT_MS = 24_000;
+/**
+ * How hard the model thinks before it answers. A bot script is short and
+ * simple, and at the default effort a reasoning model can think past
+ * `MODEL_TIMEOUT_MS`, which fails the player's prompt.
+ */
+const ANTHROPIC_EFFORT = "low";
+const OPENAI_REASONING_EFFORT = "low";
 
 /**
  * Writing a short bot script is a small task and players are waiting on it,
@@ -48,6 +55,7 @@ export class AgentError extends Error {}
 
 const DECLINED = "The agent declined to write a bot for that prompt.";
 const CUT_OFF = "The agent's script was cut off for being too long.";
+const TOO_SLOW = "The agent took too long. Try again.";
 
 /**
  * The contract between the game and the model. Keep it in sync with
@@ -80,9 +88,11 @@ The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the
 ## Environment
 
 - Lua 5.4 syntax with only \`math\`, \`string\`, \`table\` and the base library. There is no \`io\`, \`os\`, \`require\` or \`coroutine\`.
+- String concatenation (\`..\`) is not available, and a string literal may be at most 256 bytes. A script that uses either is rejected. Bots work with numbers and tables; they have no use for building strings.
 - Globals and upvalues persist between ticks, so the script can remember things.
 - \`math.random\` is available and is seeded per match.
 - Each call to \`tick\` has a small instruction budget. A call that runs too long, or raises an error, makes the bot idle for that tick, so keep the logic simple and guard against nil (for example an empty \`state.enemies\`).
+- Memory is limited to 1 MB, and instructions cost more the more memory the script holds. Remember a few numbers between ticks, not a growing history: a bot that goes over the limit is switched off for the rest of the match.
 
 ## Output
 
@@ -157,11 +167,12 @@ async function askAnthropic(env: ModelEnv, model: string, turns: Turn[]): Promis
       model,
       max_tokens: ANTHROPIC_MAX_TOKENS,
       thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
+      output_config: { effort: ANTHROPIC_EFFORT },
       system: SYSTEM_PROMPT,
       messages: turns,
     });
   } catch (err) {
+    if (err instanceof Anthropic.APIConnectionTimeoutError) throw new AgentError(TOO_SLOW);
     if (err instanceof Anthropic.APIError) {
       throw new AgentError(`Model API error (${err.status ?? "no response"}): ${err.message}`);
     }
@@ -178,25 +189,40 @@ async function askOpenAi(env: ModelEnv, model: string, turns: Turn[]): Promise<s
   if (!env.OPENAI_API_KEY) throw new AgentError("The agent has no OpenAI API key.");
   const base = (env.OPENAI_BASE_URL || OPENAI_BASE_URL).replace(/\/+$/, "");
 
-  let response: Response;
-  try {
-    response = await fetch(`${base}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...turns],
-      }),
-      signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-    });
-  } catch (err) {
-    throw new AgentError(`Could not reach the model API: ${err instanceof Error ? err.message : err}`);
-  }
+  // One deadline for the whole call, including the second request below.
+  const signal = AbortSignal.timeout(MODEL_TIMEOUT_MS);
+  const ask = async (extra: Record<string, unknown>) => {
+    let response: Response;
+    try {
+      response = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...turns],
+          ...extra,
+        }),
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new AgentError(TOO_SLOW);
+      throw new AgentError(`Could not reach the model API: ${err instanceof Error ? err.message : err}`);
+    }
+    const reply = (await response.json().catch(() => null)) as any;
+    // The deadline can also pass while the body is still arriving.
+    if (signal.aborted) throw new AgentError(TOO_SLOW);
+    return { response, reply };
+  };
 
-  const reply = (await response.json().catch(() => null)) as any;
+  let { response, reply } = await ask({ reasoning_effort: OPENAI_REASONING_EFFORT });
+  if (response.status === 400 && JSON.stringify(reply ?? "").includes("reasoning_effort")) {
+    // A model or service without that setting turns the request down at
+    // once, so asking again without it costs next to nothing.
+    ({ response, reply } = await ask({}));
+  }
   if (!response.ok) {
     throw new AgentError(`Model API error (${response.status}): ${reply?.error?.message ?? "unknown error"}`);
   }
