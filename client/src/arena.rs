@@ -7,24 +7,11 @@
 use bevy::prelude::*;
 use promptnite_bindings::*;
 
-use crate::net::{self, Conn};
-
-/// Colours are assigned by bot id, so a player keeps theirs between rounds.
-/// Shared with the UI so the player list matches the spheres.
-pub const PALETTE: [[u8; 3]; 8] = [
-    [239, 83, 80],
-    [66, 165, 245],
-    [102, 187, 106],
-    [255, 202, 40],
-    [171, 71, 188],
-    [255, 112, 67],
-    [38, 198, 218],
-    [236, 64, 122],
-];
-
-pub fn bot_color(id: u32) -> [u8; 3] {
-    PALETTE[id as usize % PALETTE.len()]
-}
+use crate::{
+    net::Conn,
+    theme::{self, PALETTE},
+    ui::Screen,
+};
 
 /// What is on screen this frame. Written here, read by the UI for labels.
 #[derive(Resource, Default)]
@@ -68,13 +55,13 @@ fn camera_transform(edge: u32) -> Transform {
 }
 
 #[derive(Component)]
-struct Floor;
+pub struct Floor;
 
 #[derive(Component)]
-struct Bot(u32);
+pub struct Bot(u32);
 
 #[derive(Resource)]
-struct BotAssets {
+pub struct BotAssets {
     mesh: Handle<Mesh>,
     alive: Vec<Handle<StandardMaterial>>,
     dead: Handle<StandardMaterial>,
@@ -96,7 +83,7 @@ fn setup(
         Floor,
         Mesh3d(meshes.add(Plane3d::default().mesh().size(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.55, 0.56, 0.58),
+            base_color: theme::FLOOR,
             perceptual_roughness: 0.9,
             ..default()
         })),
@@ -121,33 +108,36 @@ fn setup(
             .iter()
             .map(|&[r, g, b]| materials.add(Color::srgb_u8(r, g, b)))
             .collect(),
-        dead: materials.add(Color::srgb(0.25, 0.25, 0.27)),
+        dead: materials.add(theme::BOT_DEAD),
     });
 }
 
 /// Everybody watches the arena from behind the edge their own bot starts at.
-fn point_of_view(conn: Option<Res<Conn>>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
-    let Some((me, _)) = conn.as_deref().and_then(net::my_room) else {
+fn point_of_view(screen: Res<Screen>, mut camera: Single<&mut Transform, With<ArenaCamera>>) {
+    let Screen::Room(snapshot) = &*screen else {
         return;
     };
-    let wanted = camera_transform(me.edge);
+    let wanted = camera_transform(snapshot.me.edge);
     if **camera != wanted {
         **camera = wanted;
     }
 }
 
-/// Decide which tick to show and blend the frames around it.
-fn replay(
+/// Decide which tick to show and blend the frames around it. Without a
+/// server (the sandbox) there are no frames, and the bots are filled in
+/// right after this.
+pub fn replay(
     time: Res<Time>,
+    screen: Res<Screen>,
     conn: Option<Res<Conn>>,
     mut replay: ResMut<Replay>,
     mut floor: Single<&mut Transform, With<Floor>>,
 ) {
     replay.bots.clear();
-    let Some(conn) = conn else { return };
-    let Some((_, room)) = net::my_room(&conn) else {
+    let Screen::Room(snapshot) = &*screen else {
         return;
     };
+    let room = &snapshot.game;
     floor.scale = Vec3::new(room.arena_half_size * 2.0, 1.0, room.arena_half_size * 2.0);
 
     // We time the replay from the moment we *see* the phase change instead of
@@ -174,6 +164,7 @@ fn replay(
         Phase::Results | Phase::Prompting => last,
     };
 
+    let Some(conn) = conn else { return };
     let frames = conn.db().frame();
     let Some(from) = frames.key().find(&frame_key(room.id, tick.floor() as u32)) else {
         return;
@@ -201,7 +192,7 @@ fn replay(
 }
 
 /// Keep exactly one sphere per bot in the replay.
-fn sync_bots(
+pub fn sync_bots(
     mut commands: Commands,
     replay: Res<Replay>,
     assets: Res<BotAssets>,
