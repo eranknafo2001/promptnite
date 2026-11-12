@@ -72,7 +72,8 @@ const ARENA_HALF_SIZE: f32 = 10.0;
 
 /// A greyboxed rooftop out of KayKit Platformer pieces: a flat 20x20 roof of
 /// 4x4 blocks (top at y = 0) with a railing along each edge, standing on the
-/// outermost 0.4 m so a bot pushed against the edge touches it.
+/// outermost 0.4 m (`RAILING_DEPTH` in `sim/src/rules.rs`), where the sim
+/// stops the bots.
 fn spawn_rooftop(commands: &mut Commands, assets: &AssetServer) {
     let piece = |name: &str| WorldAssetRoot(assets.load(format!("kaykit/{name}.gltf#Scene0")));
 

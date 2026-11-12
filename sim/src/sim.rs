@@ -182,7 +182,7 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
 
         // 2. Movement.
         let step = rules::WALK_SPEED / rules::TICKS_PER_SEC as f32;
-        let limit = rules::ARENA_HALF_SIZE - rules::BOT_RADIUS;
+        let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
             if let Action::Walk { dx, dy } = actions[i] {
                 let len = (dx * dx + dy * dy).sqrt();
@@ -473,7 +473,7 @@ mod tests {
     fn bots_stay_inside_the_arena() {
         let runner = r#"function tick() return { action = "walk", dx = 1, dy = 1 } end"#;
         let outcome = run_match(&[spec(1, runner), spec(2, IDLE)], 0);
-        let limit = rules::ARENA_HALF_SIZE - rules::BOT_RADIUS;
+        let limit = rules::BOT_LIMIT;
         for frame in &outcome.frames {
             assert!(frame.bots[0].x <= limit && frame.bots[0].y <= limit);
         }
