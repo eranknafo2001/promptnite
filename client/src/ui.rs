@@ -4,7 +4,8 @@
 //!
 //!   +-------------------------------------+
 //!   | settings       [P]         players  |   icon; the room and who is in it;
-//!   |                                     |   its settings, for the owner
+//!   |                                     |   its settings, for the owner, or
+//!   |                                     |   the match timer during a fight
 //!   |               arena                 |   join screen: boxes in the middle
 //!   |                                     |
 //!   | +---------------------------------+ |
@@ -238,7 +239,8 @@ fn draw(
     bot_labels(&background, &snapshot, &replay, camera, camera_transform);
     banner(&background, screen, &snapshot, &replay);
     icon(&background, screen);
-    faults(ctx, &snapshot, &replay);
+    let clock = match_timer(&background, screen, &snapshot.game, &replay);
+    faults(ctx, &snapshot, &replay, clock);
     roster(&background, screen, &snapshot, &replay);
 
     let game = &snapshot.game;
@@ -711,9 +713,45 @@ fn bot_state(
     }
 }
 
-/// Scripts that broke during the match, top left, from the moment the replay
-/// reaches the tick where it happened.
-fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay) {
+/// Time left in the match, top left, while the fight is on. Returns the box
+/// it took up, so whatever else lives in that corner can go below it.
+///
+/// It counts down from the room's match length. A fight that is decided
+/// early ends with time still on the clock.
+fn match_timer(
+    painter: &egui::Painter,
+    screen: egui::Rect,
+    game: &Room,
+    replay: &Replay,
+) -> Option<egui::Rect> {
+    const PADDING: egui::Vec2 = egui::vec2(10.0, 5.0);
+
+    if game.phase != Phase::Fighting {
+        return None;
+    }
+    // The replay stops at the last frame, and so does the clock.
+    let fought = game.match_ticks as f32 / game.ticks_per_sec.max(1) as f32;
+    let elapsed = replay.phase_elapsed.min(fought);
+    let left = (game.match_secs as f32 - elapsed).ceil().max(0.0) as u32;
+
+    // Monospace, so the box doesn't change width as the digits do.
+    let text = painter.layout_no_wrap(
+        format!("{}:{:02}", left / 60, left % 60),
+        egui::FontId::monospace(20.0),
+        egui::Color32::WHITE,
+    );
+    let outer = egui::Rect::from_min_size(
+        screen.min + egui::Vec2::splat(EDGE),
+        text.size() + PADDING * 2.0,
+    );
+    painter.rect_filled(outer, 8.0, egui::Color32::from_black_alpha(150));
+    painter.galley(outer.min + PADDING, text, egui::Color32::WHITE);
+    Some(outer)
+}
+
+/// Scripts that broke during the match, top left (below the match timer),
+/// from the moment the replay reaches the tick where it happened.
+fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay, clock: Option<egui::Rect>) {
     let game = &snapshot.game;
     let shown_tick = match game.phase {
         Phase::Fighting => (replay.phase_elapsed * game.ticks_per_sec as f32) as u32,
@@ -728,8 +766,11 @@ fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay) {
     if faults.is_empty() {
         return;
     }
+    let top = clock.map_or(EDGE, |clock| {
+        clock.bottom() - ctx.viewport_rect().top() + 6.0
+    });
     egui::Area::new(egui::Id::new("faults"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, top))
         .interactable(false)
         .show(ctx, |ui| {
             ui.set_max_width(320.0);
