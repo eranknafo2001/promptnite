@@ -39,6 +39,15 @@ pub fn edge_direction(edge: u32) -> (f32, f32) {
 /// Collision/visual radius of a bot.
 pub const BOT_RADIUS: f32 = 0.5;
 
+/// A railing stands on the outermost strip of the arena, this deep (the
+/// client's railing model, `client/src/arena.rs`). Bots are stopped by it,
+/// not by the arena's edge behind it.
+pub const RAILING_DEPTH: f32 = 0.4;
+
+/// A bot's centre stays within `-BOT_LIMIT..=BOT_LIMIT` on both axes, so its
+/// body touches the railing without going into it.
+pub const BOT_LIMIT: f32 = ARENA_HALF_SIZE - RAILING_DEPTH - BOT_RADIUS;
+
 pub const MAX_HP: i32 = 100;
 
 /// Distance covered by one `walk` action, in arena units per second.
@@ -53,15 +62,33 @@ pub const ATTACK_COOLDOWN_TICKS: u32 = 5;
 
 // --- Sandbox limits for untrusted Lua -------------------------------------
 
-/// VM instructions a script may spend while loading (top-level code).
+/// Fuel a script may spend while loading (top-level code). The VM charges
+/// one unit per instruction and a few per call.
 pub const INIT_FUEL: i32 = 200_000;
 
-/// VM instructions a script may spend per `tick()` call. Going over costs the
-/// bot its turn; it does not end the match.
+/// Fuel a script may spend per `tick()` call. Going over costs the bot its
+/// turn; it does not end the match.
 pub const TICK_FUEL: i32 = 20_000;
 
-/// Lua heap size above which a bot is disabled for the rest of the match.
-pub const MAX_LUA_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+/// Fuel gets more expensive with memory: a script holding `n` times this many
+/// bytes pays `1 + n` units where an empty one pays 1. A single instruction
+/// can cost as much real time as the heap is large, so this is what turns the
+/// fuel budget into a bound on how long a tick takes.
+pub const FUEL_MEMORY_UNIT: usize = 32 * 1024;
+
+/// How much fuel the VM gets at a time before the heap is looked at again.
+pub const FUEL_SLICE: i32 = 256;
+
+/// Lua heap size a script may not exceed. Checked while it runs, and when it
+/// is loaded. A bot that goes over is disabled for the rest of the match.
+pub const MAX_LUA_MEMORY_BYTES: usize = 1024 * 1024;
+
+/// Longest string literal a script may contain. Scripts cannot concatenate
+/// strings either, so this is also the longest string they can ever hold.
+pub const MAX_STRING_LITERAL_BYTES: usize = 256;
+
+/// Most values one `table.unpack` call may return.
+pub const MAX_UNPACK_VALUES: usize = 1024;
 
 /// Largest script we accept, in bytes.
 pub const MAX_SCRIPT_BYTES: usize = 16 * 1024;

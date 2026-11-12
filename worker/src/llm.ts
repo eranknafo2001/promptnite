@@ -88,9 +88,11 @@ The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the
 ## Environment
 
 - Lua 5.4 syntax with only \`math\`, \`string\`, \`table\` and the base library. There is no \`io\`, \`os\`, \`require\` or \`coroutine\`.
+- String concatenation (\`..\`) is not available, and a string literal may be at most 256 bytes. A script that uses either is rejected. Bots work with numbers and tables; they have no use for building strings.
 - Globals and upvalues persist between ticks, so the script can remember things.
 - \`math.random\` is available and is seeded per match.
 - Each call to \`tick\` has a small instruction budget. A call that runs too long, or raises an error, makes the bot idle for that tick, so keep the logic simple and guard against nil (for example an empty \`state.enemies\`).
+- Memory is limited to 1 MB, and instructions cost more the more memory the script holds. Remember a few numbers between ticks, not a growing history: a bot that goes over the limit is switched off for the rest of the match.
 
 ## Output
 

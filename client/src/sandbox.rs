@@ -290,6 +290,7 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
             message: "bot:7: attempt to index a nil value (local 'target')".into(),
         }],
         me: players[0].clone(),
+        prompt_refusal: None,
         players,
         submissions,
     }

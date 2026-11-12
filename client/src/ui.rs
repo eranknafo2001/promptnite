@@ -152,6 +152,9 @@ pub struct Snapshot {
     pub submissions: Vec<Submission>,
     pub faults: Vec<MatchFault>,
     pub me: Player,
+    /// Why the server would not take our last prompt at all (sent too soon
+    /// after the one before, the agents are busy, ...).
+    pub prompt_refusal: Option<String>,
 }
 
 impl Snapshot {
@@ -414,11 +417,18 @@ fn prompt_box(
                 });
                 ui.label(small("Tell your agent how your bot should fight."));
                 ui.add_space(8.0);
-                if let Some(error) = error.filter(|error| !error.is_empty()) {
+                // A prompt the server would not take at all comes before one
+                // whose agent failed.
+                let refused = snapshot.prompt_refusal.as_deref();
+                let problem = refused
+                    .map(|why| ("The server didn't take your prompt", why))
+                    .or(error.map(|why| ("Your agent couldn't build a bot", why)))
+                    .filter(|(_, why)| !why.is_empty());
+                if let Some((heading, why)) = problem {
                     theme::error_panel(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(theme::error_heading("Your agent couldn't build a bot"));
-                        ui.label(theme::error_body(error));
+                        ui.label(theme::error_heading(heading));
+                        ui.label(theme::error_body(why));
                     });
                     ui.add_space(10.0);
                 }
