@@ -113,6 +113,9 @@ Things to know:
 - The client is told where the worker is by the deploy. Elsewhere, use
   `?log=<worker>/logs` in the browser or `PROMPTNITE_LOG_URL` on desktop
   (`make client LOG_URL=http://127.0.0.1:8787/logs`).
+- To turn logging off again, remove the repository secret and also run
+  `npx wrangler secret delete AXIOM_TOKEN` in `worker/`: a deploy leaves the
+  worker's existing secrets in place.
 - A module on your own machine may be too far from Axiom to send in time. Its
   events wait and are retried; `spacetime logs` has them regardless.
 
