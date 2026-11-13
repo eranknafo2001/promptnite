@@ -96,6 +96,9 @@ fn outward(edge: u32) -> Vec3 {
 pub struct Bot {
     id: u32,
     dead: bool,
+    /// Health last frame, to spot a hit, and the app time of the last one.
+    hp: i32,
+    hit_at: f32,
 }
 
 #[derive(Resource)]
@@ -103,13 +106,37 @@ pub struct BotAssets {
     mesh: Handle<Mesh>,
     alive: Vec<Handle<StandardMaterial>>,
     tombstone: Handle<WorldAsset>,
+    blade: (Handle<Mesh>, Handle<StandardMaterial>),
+    slash: Handle<Mesh>,
+    hilt: (Handle<Mesh>, Handle<StandardMaterial>),
+}
+
+/// A live bot's floating hand: a pivot at the bot's centre, turned so the
+/// hand (with its dagger pointing outwards) sits off to one side of where
+/// the bot faces. Every attack swings it across the front to the other side.
+#[derive(Component)]
+pub struct Hand {
+    id: u32,
+    /// Which side it rests on: 1 or -1.
+    side: f32,
+    /// App time the last swing began.
+    swung_at: f32,
+    swinging: bool,
+    /// Where the bot faces, on the ground plane.
+    facing: Vec3,
 }
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Replay>()
         .init_resource::<CameraSpring>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (point_of_view, (replay, sync_bots).chain()));
+        .add_systems(
+            Update,
+            (
+                point_of_view,
+                (replay, sync_bots, swing_hands, fade_slashes).chain(),
+            ),
+        );
 }
 
 /// Half the arena's side, as in `ARENA_HALF_SIZE` in `sim/src/rules.rs`.
@@ -387,6 +414,15 @@ fn setup(
             .map(|&[r, g, b]| materials.add(Color::srgb_u8(r, g, b)))
             .collect(),
         tombstone: assets.load("kaykit/halloween/gravestone.gltf#Scene0"),
+        blade: (
+            meshes.add(Cuboid::new(0.4, 0.1, BLADE_LENGTH)),
+            materials.add(theme::DAGGER_BLADE),
+        ),
+        slash: meshes.add(slash_mesh()),
+        hilt: (
+            meshes.add(Cuboid::new(0.7, 0.14, 0.14)),
+            materials.add(theme::DAGGER_HILT),
+        ),
     });
 }
 
@@ -518,20 +554,47 @@ pub fn sync_bots(
     screen: Res<Screen>,
     replay: Res<Replay>,
     assets: Res<BotAssets>,
-    mut bots: Query<(Entity, &Bot, &mut Transform)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    mut bots: Query<(
+        Entity,
+        &mut Bot,
+        &mut Transform,
+        Option<&MeshMaterial3d<StandardMaterial>>,
+    )>,
 ) {
+    let now = time.elapsed_secs();
     // Tombstones face the player's own camera.
     let facing = match &*screen {
         Screen::Room(snapshot) => outward(snapshot.me.edge),
         _ => Vec3::Z,
     };
     let mut present = Vec::new();
-    for (entity, bot, mut transform) in &mut bots {
+    for (entity, mut bot, mut transform, material) in &mut bots {
         let view = replay.bots.iter().find(|view| view.id == bot.id);
         match view {
             Some(view) if is_dead(view) == bot.dead => {
                 present.push(view.id);
+                if view.hp < bot.hp {
+                    bot.hit_at = now;
+                }
+                bot.hp = view.hp;
                 *transform = bot_transform(view, facing);
+                // A hit: an orange flash and a quick punch outwards.
+                let since = now - bot.hit_at;
+                let punch = (1.0 - since / HIT_PUNCH_SECS).max(0.0);
+                transform.scale *= 1.0 + HIT_PUNCH * punch * punch;
+                // Each hit restarts the fade from full orange. A little past
+                // the end too, so the last write is the bot's own colour.
+                if since < HIT_FLASH_SECS + 0.5
+                    && let Some(mut material) = material.and_then(|m| materials.get_mut(&m.0))
+                {
+                    let fade = (1.0 - since / HIT_FLASH_SECS).clamp(0.0, 1.0);
+                    let flash = fade * fade;
+                    let [r, g, b] = theme::bot_color(bot.id);
+                    material.base_color = Color::srgb_u8(r, g, b).mix(&theme::HIT_FLASH, flash);
+                    material.emissive = theme::HIT_FLASH.to_linear() * (2.0 * flash);
+                }
             }
             _ => commands.entity(entity).despawn(),
         }
@@ -545,17 +608,72 @@ pub fn sync_bots(
         let bot = Bot {
             id: view.id,
             dead: is_dead(view),
+            hp: view.hp,
+            hit_at: f32::NEG_INFINITY,
         };
         let transform = bot_transform(view, facing);
         if bot.dead {
             commands.spawn((bot, WorldAssetRoot(assets.tombstone.clone()), transform));
         } else {
             let material = assets.alive[view.id as usize % assets.alive.len()].clone();
+            let id = view.id;
+            // Its own copy of the body's material, for the hit flash.
+            let body = materials.get(&material).cloned().unwrap_or_default();
+            let body = materials.add(body);
             commands.spawn((
                 bot,
                 Mesh3d(assets.mesh.clone()),
-                MeshMaterial3d(material),
+                MeshMaterial3d(body),
                 transform,
+                children![
+                    (
+                        Nose(id),
+                        Transform::default(),
+                        Visibility::default(),
+                        children![(
+                            Mesh3d(assets.mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            Transform::from_xyz(0.0, NOSE_LIFT, -NOSE_REACH)
+                                .with_scale(Vec3::splat(NOSE_SIZE)),
+                        )],
+                    ),
+                    (
+                        Hand {
+                            id,
+                            side: 1.0,
+                            swung_at: f32::NEG_INFINITY,
+                            swinging: false,
+                            facing: Vec3::NEG_Z,
+                        },
+                        Transform::default(),
+                        Visibility::default(),
+                        children![(
+                            Mesh3d(assets.mesh.clone()),
+                            MeshMaterial3d(material),
+                            Transform::from_xyz(0.0, 0.0, -HAND_REACH)
+                                .with_scale(Vec3::splat(HAND_SIZE)),
+                            children![
+                                // Hand radii along z; the meshes themselves in bot radii.
+                                (
+                                    Mesh3d(assets.blade.0.clone()),
+                                    MeshMaterial3d(assets.blade.1.clone()),
+                                    Transform::from_xyz(
+                                        0.0,
+                                        0.0,
+                                        -0.6 - BLADE_LENGTH / HAND_SIZE / 2.0
+                                    )
+                                    .with_scale(Vec3::splat(1.0 / HAND_SIZE)),
+                                ),
+                                (
+                                    Mesh3d(assets.hilt.0.clone()),
+                                    MeshMaterial3d(assets.hilt.1.clone()),
+                                    Transform::from_xyz(0.0, 0.0, -1.0)
+                                        .with_scale(Vec3::splat(1.0 / HAND_SIZE)),
+                                ),
+                            ],
+                        )],
+                    )
+                ],
             ));
         }
     }
@@ -569,16 +687,235 @@ fn is_dead(view: &BotView) -> bool {
 const TOMBSTONE_SCALE: f32 = 0.75;
 
 fn bot_transform(view: &BotView, facing: Vec3) -> Transform {
-    // Placeholder "animation": a punch puffs the sphere up.
-    let scale = match view.action {
-        BotAction::Dead => {
-            return Transform::from_translation(view.position.with_y(0.0))
-                .looking_to(-facing, Vec3::Y)
-                .with_scale(Vec3::splat(TOMBSTONE_SCALE));
+    if is_dead(view) {
+        return Transform::from_translation(view.position.with_y(0.0))
+            .looking_to(-facing, Vec3::Y)
+            .with_scale(Vec3::splat(TOMBSTONE_SCALE));
+    }
+    Transform::from_translation(view.position).with_scale(Vec3::splat(view.radius))
+}
+
+/// Turned to where its bot faces, with a little sphere sticking out of the
+/// body that way.
+#[derive(Component)]
+pub struct Nose(u32);
+
+/// The nose, in bot radii: how far out from the centre, how high, how big.
+const NOSE_REACH: f32 = 0.95;
+const NOSE_LIFT: f32 = 0.2;
+const NOSE_SIZE: f32 = 0.28;
+
+/// A hit: how long the body's orange takes to fade, and how far and how long it punches out.
+const HIT_FLASH_SECS: f32 = 0.25;
+const HIT_PUNCH: f32 = 0.12;
+const HIT_PUNCH_SECS: f32 = 0.2;
+
+/// The hand, in bot radii: how far out it floats and how big it is.
+const HAND_REACH: f32 = 1.6;
+const HAND_SIZE: f32 = 0.3;
+/// In bot radii, like the hilt.
+const BLADE_LENGTH: f32 = 0.9;
+/// How far round from straight ahead the hand rests, either side.
+const HAND_REST: f32 = 1.1;
+const SWING_SECS: f32 = 0.18;
+
+/// Noses and trails, which turn with the hands.
+type Turning = (
+    AnyOf<(&'static Nose, &'static Slash)>,
+    &'static mut Transform,
+);
+
+/// Face the nearest living enemy; on every swing (an attack tick, hit or
+/// miss) sweep the hand across the front to the other side.
+fn swing_hands(
+    mut commands: Commands,
+    assets: Res<BotAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    replay: Res<Replay>,
+    mut hands: Query<(&mut Hand, &mut Transform)>,
+    mut turning: Query<Turning, Without<Hand>>,
+) {
+    let now = time.elapsed_secs();
+    for (mut hand, mut transform) in &mut hands {
+        let Some(me) = replay.bots.iter().find(|bot| bot.id == hand.id) else {
+            continue;
+        };
+        // ponytail: frames carry no heading, so bots face their nearest
+        // enemy; send one from the sim if bots ever need to look elsewhere.
+        let nearest = replay
+            .bots
+            .iter()
+            .filter(|bot| bot.id != me.id && !is_dead(bot))
+            .map(|bot| (bot.position - me.position).with_y(0.0))
+            .filter(|to| to.length_squared() > 1e-4)
+            .min_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
+        if let Some(to) = nearest {
+            let goal = to.normalize();
+            let turn = 1.0 - (-12.0 * time.delta_secs()).exp();
+            hand.facing = hand.facing.lerp(goal, turn).normalize_or(goal);
         }
-        BotAction::Attack => 1.3,
-        BotAction::Miss => 1.12,
-        BotAction::Idle | BotAction::Walk => 1.0,
+
+        let swinging = matches!(me.action, BotAction::Attack | BotAction::Miss);
+        if swinging && !hand.swinging {
+            hand.side = -hand.side;
+            hand.swung_at = now;
+            // The trail behind the blade, mirrored to run the way it goes.
+            // Placed by the code below from the next frame on.
+            let scale = Vec3::new(hand.side, 1.0, 1.0) * me.radius;
+            commands.spawn((
+                Slash {
+                    id: hand.id,
+                    born: now,
+                    scale,
+                },
+                Mesh3d(assets.slash.clone()),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    // Past white, so the glow holds up over a bright floor.
+                    base_color: (theme::SLASH.to_linear() * 2.5).into(),
+                    unlit: true,
+                    // Added on top, so it glows against the floor.
+                    alpha_mode: AlphaMode::Add,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                })),
+                Transform::from_scale(Vec3::ZERO),
+                bevy::light::NotShadowCaster,
+            ));
+        }
+        hand.swinging = swinging;
+
+        // Ease out: fast through the front, settling on the far side.
+        let t = ((now - hand.swung_at) / SWING_SECS).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let offset = HAND_REST * hand.side * (2.0 * eased - 1.0);
+        let yaw = f32::atan2(-hand.facing.x, -hand.facing.z) + offset;
+        transform.rotation = Quat::from_rotation_y(yaw);
+        let ahead = Quat::from_rotation_y(yaw - offset);
+        for ((nose, slash), mut turned) in &mut turning {
+            if nose.is_some_and(|nose| nose.0 == hand.id) {
+                turned.rotation = ahead;
+            }
+            // This swing's trail rides along with the blade: its bright end
+            // (at +HAND_REST in the mesh, mirrored for the other way) on it.
+            if let Some(slash) = slash
+                && slash.id == hand.id
+                && slash.born == hand.swung_at
+                && t < 1.0
+            {
+                turned.translation = me.position;
+                turned.rotation = Quat::from_rotation_y(yaw - hand.side * HAND_REST);
+                // Grows out of the blade as the swing gets going.
+                turned.scale = slash.scale * (0.6 + 0.4 * eased);
+            }
+        }
+    }
+}
+
+/// A swing's trail: shown at once, gone after `SLASH_SECS`.
+#[derive(Component)]
+struct Slash {
+    /// The bot, and the swing (its start time) it belongs to.
+    id: u32,
+    born: f32,
+    scale: Vec3,
+}
+
+/// How long a trail lingers once its swing is over.
+const SLASH_SECS: f32 = 0.2;
+
+/// Fade each trail out once its swing is over, spreading it a little as it
+/// goes.
+fn fade_slashes(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut slashes: Query<(
+        Entity,
+        &Slash,
+        &MeshMaterial3d<StandardMaterial>,
+        &mut Transform,
+    )>,
+) {
+    let now = time.elapsed_secs();
+    for (entity, slash, material, mut transform) in &mut slashes {
+        // Full strength while its swing lasts, then fade.
+        let t = (now - slash.born - SWING_SECS) / SLASH_SECS;
+        if t >= 1.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if t < 0.0 {
+            continue;
+        }
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color.set_alpha(1.0 - t * t);
+        }
+        transform.scale = slash.scale * (1.0 + 0.12 * t);
+    }
+}
+
+/// Torn streaks round the bot in its own radii, sweeping from one resting
+/// side of the hand to the other (towards +x), where the blade passes. Each
+/// streak is a thin band (soft edge, hot core, soft edge) that starts
+/// somewhere along the swing, thickens and brightens towards its end, and
+/// is ripped through by gaps and a ragged width. All of it in vertex alpha.
+fn slash_mesh() -> Mesh {
+    use bevy::{
+        asset::RenderAssetUsages, mesh::Indices, render::render_resource::PrimitiveTopology,
     };
-    Transform::from_translation(view.position).with_scale(Vec3::splat(scale * view.radius))
+
+    const SEGMENTS: u32 = 96;
+    // (radius, half width, where along the swing it starts, brightness)
+    const STREAKS: [(f32, f32, f32, f32); 6] = [
+        (2.15, 0.3, 0.0, 1.0),
+        (1.8, 0.16, 0.3, 0.9),
+        (2.5, 0.11, 0.5, 0.8),
+        (1.55, 0.1, 0.55, 0.6),
+        (1.95, 0.07, 0.1, 0.7),
+        (2.35, 0.07, 0.2, 0.7),
+    ];
+    let (mut positions, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+    for (k, &(radius, half_width, start, brightness)) in STREAKS.iter().enumerate() {
+        let seed = k as f32 * 7.31;
+        let first = positions.len() as u32;
+        for i in 0..=SEGMENTS {
+            let u = i as f32 / SEGMENTS as f32;
+            let angle = HAND_REST * (2.0 * u - 1.0);
+            // The same turn the hand pivot makes: -z, round y.
+            let dir = Vec3::new(-angle.sin(), 0.0, -angle.cos());
+            // 0 before the streak starts, rising to 1 at the end of the swing.
+            let along = ((u - start) / (1.0 - start)).clamp(0.0, 1.0);
+            // ponytail: a few sines stand in for noise; a texture if it ever
+            // needs to look less regular.
+            let wobble = (u * 61.0 + seed).sin() * 0.5 + (u * 173.0 + seed * 2.3).sin() * 0.5;
+            // Long strokes with the odd break; the main one barely breaks.
+            let breaks = if k == 0 { 2.6 } else { 1.4 };
+            let gaps =
+                ((u * 14.0 + seed * 1.7).sin() + (u * 33.0 + seed).sin() * 0.6) * 2.0 + breaks;
+            let width = half_width * (0.25 + 0.75 * along) * (1.0 + 0.6 * wobble);
+            let alpha = brightness * along.sqrt() * gaps.clamp(0.0, 1.0);
+            for (offset, edge) in [(-width, 0.0), (0.0, 1.0), (width, 0.0)] {
+                positions.push(dir * (radius + offset));
+                colors.push([1.0, 1.0, 1.0, alpha * edge]);
+            }
+        }
+        for i in 0..SEGMENTS {
+            for j in 0..2 {
+                let a = first + i * 3 + j;
+                let b = a + 3;
+                indices.extend([a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+    }
+    let count = positions.len();
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; count])
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+    .with_inserted_indices(Indices::U32(indices))
 }

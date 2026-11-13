@@ -7,6 +7,11 @@
 //! `PROMPTNITE_SHOTS=<dir> make sandbox` (desktop) instead goes through every
 //! screen on its own, saves a PNG of each into `<dir>` and quits: a quick
 //! before/after of a restyle.
+//!
+//! `PROMPTNITE_VIDEO=<dir> make sandbox` (desktop) plays the fight with time
+//! stepped exactly 1/30 s a frame, saves every frame into `<dir>` and quits.
+//! Turn them into a video with
+//! `ffmpeg -framerate 30 -i <dir>/%04d.png -pix_fmt yuv420p fight.mp4`.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -117,6 +122,58 @@ pub fn plugin(app: &mut App) {
         })
         .add_systems(Update, take_shots.after(publish_screen));
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(dir) = std::env::var("PROMPTNITE_VIDEO") {
+        std::fs::create_dir_all(&dir).expect("could not create the video directory");
+        app.insert_resource(Video(dir.into(), 0))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / VIDEO_FPS),
+            ))
+            .add_systems(Update, record_video.after(publish_screen));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const VIDEO_FPS: f64 = 30.0;
+
+/// Where the frames go, and how many have been saved.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource)]
+struct Video(std::path::PathBuf, u32);
+
+/// Every frame of the fight, then quit.
+#[cfg(not(target_arch = "wasm32"))]
+fn record_video(
+    mut commands: Commands,
+    mut video: ResMut<Video>,
+    mut sandbox: ResMut<Sandbox>,
+    time: Res<Time>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+
+    let now = time.elapsed_secs_f64();
+    sandbox.help = false;
+    if video.1 == 0 && sandbox.stage() != Stage::Fighting {
+        // A second of the opening frame first, for the window to settle.
+        if now >= 1.0 {
+            sandbox.go(Stage::Fighting, now);
+        }
+        return;
+    }
+    if sandbox.stage() != Stage::Fighting {
+        // Frames left after the fight: wait for the last files to land.
+        if now - sandbox.since > 1.0 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    video.1 += 1;
+    let file = video.0.join(format!("{:04}.png", video.1));
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(file));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -316,6 +373,8 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
     const WALK_IN: f32 = 4.0;
     for (i, (id, edge, burn)) in bots.into_iter().enumerate() {
         let hp = (100.0 - burn * (t - WALK_IN).max(0.0)).max(0.0);
+        // Lose it 10 at a time, like real hits (`ATTACK_DAMAGE`).
+        let hp = (hp / 10.0).ceil() * 10.0;
         // A knocked-out bot stays where it fell.
         let moving = if hp > 0.0 { t } else { WALK_IN + 100.0 / burn };
 
