@@ -304,13 +304,13 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
         round: ROUND,
         status,
         build: if status == Ready {
-            match player_id {
+            Some(match player_id {
                 1 => vec![1, 4, 1, 3, 1],
                 2 => vec![5, 0, 3, 0, 2],
                 _ => vec![2, 2, 2, 2, 2],
-            }
+            })
         } else {
-            vec![]
+            None
         },
         max_hp: match player_id {
             1 => 80,
