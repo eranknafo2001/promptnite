@@ -22,7 +22,11 @@ mod teleporter;
 mod theme;
 mod ui;
 
-use bevy::{log::LogPlugin, prelude::*};
+use bevy::{
+    asset::{AssetMetaCheck, AssetPlugin},
+    log::LogPlugin,
+    prelude::*,
+};
 
 fn main() {
     let sandbox = sandbox::enabled();
@@ -44,6 +48,13 @@ fn main() {
                         fit_canvas_to_parent: true,
                         ..default()
                     }),
+                    ..default()
+                })
+                // No asset here has a `.meta` file. Asking for one anyway
+                // breaks every model on a web server that answers a missing
+                // file with its front page, as `trunk serve` does.
+                .set(AssetPlugin {
+                    meta_check: AssetMetaCheck::Never,
                     ..default()
                 })
                 .set(LogPlugin {

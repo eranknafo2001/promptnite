@@ -199,7 +199,9 @@ fn flare(
         if let Some(mut lights) = materials.get_mut(&pad.lights) {
             // Each pad breathes on its own beat.
             let breath = 0.5 + 0.5 * (now * 2.2 + pad.number as f32 * 1.7).sin();
-            lights.emissive = glow * (2.2 + 0.8 * breath + 6.0 * lit);
+            // Nothing blooms here, so anything much past 1 only washes out
+            // to white: stay cyan at rest and go white for the jump.
+            lights.emissive = glow * (0.8 + 0.25 * breath + 4.0 * lit);
         }
         if let Some(mut flame) = materials.get_mut(&pad.flame) {
             // Past white at its brightest, so it holds up over a bright floor.
