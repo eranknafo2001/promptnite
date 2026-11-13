@@ -90,6 +90,8 @@ struct Form {
     focused: Option<Field>,
     /// Decides which send shortcut the hint shows.
     mac: bool,
+    /// The prompt help popup is open.
+    help: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -213,7 +215,7 @@ fn draw(
         return Ok(());
     }
     let screen_rect = ctx.viewport_rect();
-    let background = ctx.layer_painter(egui::LayerId::new(
+    let mut background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("arena_overlay"),
     ));
@@ -244,6 +246,13 @@ fn draw(
     };
     let screen = screen_rect;
 
+    // The help popup only belongs to prompting; everything else steps back
+    // while it is up.
+    form.help &= snapshot.game.phase == Phase::Prompting;
+    let help = help_shown(ctx, form.help);
+    let dim = 1.0 - help.clamp(0.0, 1.0);
+    background.multiply_opacity(dim);
+
     let (camera, camera_transform) = *camera;
     bot_markers(&background, &replay, camera, camera_transform);
     bot_cards(&background, screen, snapshot, &replay);
@@ -254,7 +263,7 @@ fn draw(
 
     let game = &snapshot.game;
     if game.phase == Phase::Prompting && snapshot.i_own_the_room() {
-        room_settings(ctx, game, &mut actions);
+        room_settings(ctx, game, dim, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
     match (game.phase, submission.map(|s| s.status)) {
@@ -281,6 +290,9 @@ fn draw(
         // The big countdown and the fight speak for themselves.
         (Phase::Countdown | Phase::Fighting, _) => {}
         (Phase::Results, _) => status_line(ctx, false, "Next round starts in a moment."),
+    }
+    if help != 0.0 {
+        prompt_help(ctx, screen, help, &mut form);
     }
     Ok(())
 }
@@ -398,20 +410,38 @@ fn prompt_box(
     egui::Area::new(egui::Id::new("prompt_box"))
         .fixed_pos(outer.min)
         .show(ctx, |ui| {
+            ui.multiply_opacity(1.0 - help_shown(ctx, form.help).clamp(0.0, 1.0));
+            if form.help {
+                // Nothing here takes typing or clicks while the help is up.
+                ui.disable();
+            }
             frame.show(ui, |ui| {
                 ui.set_min_size(inner);
                 ui.set_max_size(inner);
 
                 // Take the shortcut out of the input before the text box sees
                 // it. Command is Ctrl outside macOS; Ctrl also works on a Mac.
-                let shortcut = ui.input_mut(|input| {
-                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
-                        | input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
-                });
+                let shortcut = !form.help
+                    && ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                            | input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
+                    });
 
                 ui.horizontal(|ui| {
                     ui.label(theme::heading("Your prompt"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(
+                            egui::RichText::new("?").font(theme::bold(theme::SIZE_BODY)),
+                        )
+                        .corner_radius(theme::PILL_RADIUS)
+                        .min_size(egui::vec2(24.0, 24.0));
+                        if ui
+                            .add(button)
+                            .on_hover_text("What your bot knows")
+                            .clicked()
+                        {
+                            form.help = true;
+                        }
                         ui.label(small(format!("Round {}", snapshot.game.round)));
                     });
                 });
@@ -493,10 +523,12 @@ fn prompt_box(
 
 /// The room's settings, top left. Only the owner gets them, and only while
 /// prompting: that is when the next match is still to be set up.
-fn room_settings(ctx: &egui::Context, game: &Room, actions: &mut MessageWriter<Action>) {
+fn room_settings(ctx: &egui::Context, game: &Room, dim: f32, actions: &mut MessageWriter<Action>) {
     egui::Area::new(egui::Id::new("room_settings"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
+        .interactable(dim == 1.0)
         .show(ctx, |ui| {
+            ui.multiply_opacity(dim);
             box_frame().show(ui, |ui| {
                 ui.label(theme::heading("Room settings"));
                 ui.add_space(4.0);
@@ -524,6 +556,114 @@ fn room_settings(ctx: &egui::Context, game: &Room, actions: &mut MessageWriter<A
                 }
             });
         });
+}
+
+/// How far the help popup is in, 0 to 1, overshooting a little on the way
+/// (the spring). Same value however often it is asked for in a frame.
+fn help_shown(ctx: &egui::Context, open: bool) -> f32 {
+    ctx.animate_bool_with_time_and_easing(
+        egui::Id::new("prompt_help"),
+        open,
+        0.35,
+        egui::emath::easing::back_out,
+    )
+}
+
+/// What a bot knows during the match and how to write a prompt for it,
+/// over a dark overlay. `shown` runs 0 to 1 with a springy overshoot; the
+/// card scales and fades with it. A click outside, Esc or "Got it" closes it.
+fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut Form) {
+    const WIDTH: f32 = 440.0;
+    let alpha = shown.clamp(0.0, 1.0);
+
+    let overlay = egui::Area::new(egui::Id::new("prompt_help_overlay"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            ui.painter().rect_filled(
+                screen,
+                0.0,
+                egui::Color32::from_black_alpha((110.0 * alpha) as u8),
+            );
+            ui.allocate_rect(screen, egui::Sense::click())
+        });
+    if overlay.inner.clicked() || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        form.help = false;
+    }
+
+    let card = egui::Area::new(egui::Id::new("prompt_help_card"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.multiply_opacity(alpha);
+            box_frame().show(ui, |ui| {
+                ui.set_width(WIDTH.min(screen.width() - 4.0 * EDGE));
+                ui.label(theme::heading("What your bot knows"));
+                ui.add_space(4.0);
+                ui.label(small(
+                    "Your agent turns your prompt into a script. Ten times a second, \
+                     the script looks at the arena and picks one move.",
+                ));
+                ui.add_space(10.0);
+                for line in [
+                    "Where it is, its hp, and how long until it can punch again",
+                    "Where every living enemy is, their hp and how far away they are",
+                    "The arena's size, the time, and the rules: speed, punch range, damage",
+                    "Anything it chose to remember from earlier in the match",
+                ] {
+                    bullet(ui, line);
+                }
+                ui.add_space(4.0);
+                ui.label(small(
+                    "It can walk, punch the nearest enemy in range, or wait: one per tick. \
+                     It can't see other prompts or when enemies can punch next.",
+                ));
+
+                ui.add_space(14.0);
+                ui.label(theme::heading("Writing a good prompt"));
+                ui.add_space(4.0);
+                for line in [
+                    "Talk in what it can sense: distance, hp, cooldown, time left",
+                    "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
+                    "Say who to go after when there's more than one enemy",
+                    "At the time limit the most hp wins, so plan for the clock",
+                    "A short, clear plan beats a clever, vague one",
+                ] {
+                    bullet(ui, line);
+                }
+
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let got_it = egui::Button::new(
+                        egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)),
+                    );
+                    if ui.add(got_it).clicked() {
+                        form.help = false;
+                    }
+                });
+            });
+        });
+
+    // Above the overlay, scaled about its own centre.
+    ctx.move_to_top(card.response.layer_id);
+    let scale = 0.9 + 0.1 * shown;
+    let centre = card.response.rect.center().to_vec2();
+    ctx.set_transform_layer(
+        card.response.layer_id,
+        egui::emath::TSTransform::new(centre * (1.0 - scale), scale),
+    );
+    // Hand the keyboard back to the prompt once the help goes away.
+    if !form.help {
+        form.focused = None;
+    }
+}
+
+/// A list item whose wrapped lines stay clear of the dot.
+fn bullet(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal_top(|ui| {
+        ui.label(theme::body("•"));
+        ui.add(egui::Label::new(theme::body(text)).wrap());
+    });
 }
 
 /// One line at the bottom while there is nothing to type.
