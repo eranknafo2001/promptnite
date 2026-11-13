@@ -30,6 +30,7 @@ pub struct Replay {
 }
 
 pub struct BotView {
+    pub max_hp: i32,
     pub id: u32,
     /// World position of the bot's centre.
     pub position: Vec3,
@@ -702,6 +703,13 @@ pub fn replay(
         let x = bot.x + (next.x - bot.x) * blend;
         let y = bot.y + (next.y - bot.y) * blend;
         replay.bots.push(BotView {
+            max_hp: conn
+                .db()
+                .match_frames()
+                .iter()
+                .find(|f| f.room_id == room.id && f.tick == 0)
+                .and_then(|f| f.bots.into_iter().find(|b| b.player_id == bot.player_id))
+                .map_or(room.max_hp, |b| b.hp),
             id: bot.player_id,
             // Sim (x, y) is the ground plane; Bevy's up axis is Y.
             position: Vec3::new(x, room.bot_radius, y),

@@ -206,6 +206,9 @@ pub enum SubmissionStatus {
 /// `bot_script`. Private; a room's rows are served by `room_submissions`.
 #[table(accessor = submission)]
 pub struct Submission {
+    /// Validated allocation, ordered health, speed, power, reach, recovery.
+    build: Vec<u32>,
+    max_hp: i32,
     #[primary_key]
     player_id: u32,
     #[index(btree)]
@@ -612,6 +615,8 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         room_id: room.id,
         round: room.round,
         status: SubmissionStatus::Generating,
+        build: Vec::new(),
+        max_hp: rules::MAX_HP,
         error: String::new(),
     });
     ctx.db.bot_script().insert(BotScript {
@@ -898,6 +903,20 @@ fn accept_script(ctx: &ReducerContext, player_id: u32, script: String) -> Result
         .player_id()
         .find(player_id)
         .ok_or("The player's entry is gone")?;
+    let stats = sim::LuaBot::new(&script, 0)?.stats;
+    if let Some(row) = ctx.db.submission().player_id().find(player_id) {
+        ctx.db.submission().player_id().update(Submission {
+            build: vec![
+                ((stats.max_hp - 60) / 20) as u32,
+                ((stats.walk_speed - 2.2) / 0.4).round() as u32,
+                ((stats.attack_damage - 6) / 2) as u32,
+                ((stats.attack_range - 1.2) / 0.15).round() as u32,
+                7 - stats.attack_cooldown,
+            ],
+            max_hp: stats.max_hp,
+            ..row
+        });
+    }
     ctx.db
         .bot_script()
         .player_id()
@@ -1322,7 +1341,21 @@ fn room_submissions(ctx: &ViewContext) -> Vec<Submission> {
     let Some(room) = callers_room(ctx) else {
         return Vec::new();
     };
-    ctx.db.submission().room_id().filter(room.id).collect()
+    let caller_id = my_player(ctx).map(|p| p.id);
+    ctx.db
+        .submission()
+        .room_id()
+        .filter(room.id)
+        .map(|mut submission| {
+            if matches!(room.phase, Phase::Prompting | Phase::Countdown)
+                && Some(submission.player_id) != caller_id
+            {
+                submission.build.clear();
+                submission.max_hp = rules::MAX_HP;
+            }
+            submission
+        })
+        .collect()
 }
 
 /// The match of the caller's room. During the countdown that is only the

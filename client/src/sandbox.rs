@@ -215,7 +215,8 @@ fn take_shots(
     let settle = match stage {
         // Bot 3 goes down at 10.25 s: catch its blast.
         Stage::Fighting => 10.4,
-        _ => 1.0,
+        Stage::Countdown => 2.0,
+        _ => 3.0,
     };
     let waited = now - shots.since;
     if !shots.taken && waited >= settle {
@@ -302,6 +303,20 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
         room_id: ROOM,
         round: ROUND,
         status,
+        build: if status == Ready {
+            match player_id {
+                1 => vec![1, 4, 1, 3, 1],
+                2 => vec![5, 0, 3, 0, 2],
+                _ => vec![2, 2, 2, 2, 2],
+            }
+        } else {
+            vec![]
+        },
+        max_hp: match player_id {
+            1 => 80,
+            2 => 160,
+            _ => 100,
+        },
         error: error.into(),
     };
     let bo = if phase == Phase::Prompting {
@@ -372,11 +387,20 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
     }
     const WALK_IN: f32 = 4.0;
     for (i, (id, edge, burn)) in bots.into_iter().enumerate() {
-        let hp = (100.0 - burn * (t - WALK_IN).max(0.0)).max(0.0);
+        let max_hp = match id {
+            1 => 80,
+            2 => 160,
+            _ => 100,
+        };
+        let hp = (max_hp as f32 - burn * (t - WALK_IN).max(0.0)).max(0.0);
         // Lose it 10 at a time, like real hits (`ATTACK_DAMAGE`).
         let hp = (hp / 10.0).ceil() * 10.0;
         // A knocked-out bot stays where it fell.
-        let moving = if hp > 0.0 { t } else { WALK_IN + 100.0 / burn };
+        let moving = if hp > 0.0 {
+            t
+        } else {
+            WALK_IN + max_hp as f32 / burn
+        };
 
         // Same edges as `edge_direction` in `sim/src/rules.rs`.
         let start = match edge {
@@ -405,6 +429,7 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
         };
 
         replay.bots.push(BotView {
+            max_hp,
             id,
             position: Vec3::new(radius * angle.cos(), 0.5, radius * angle.sin()),
             radius: 0.5,

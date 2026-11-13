@@ -54,6 +54,7 @@ fn a_script_cannot_outgrow_the_heap_cap() {
         tick: 1,
         max_ticks: MATCH_TICKS,
         me: promptnite_sim::lua::Seen {
+            stats: Default::default(),
             id: 1,
             x: 0.0,
             y: 0.0,

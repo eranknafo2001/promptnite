@@ -65,6 +65,12 @@ const SYSTEM_PROMPT = `You write the brain of a fighting bot for the game Prompt
 
 Bots fight in a square arena. A player describes how their bot should behave and you turn that description into a Lua script. The game runs the script; the player cannot intervene during the match, so the script is the bot's entire behaviour.
 
+## Loadout
+
+Declare a global build = { hp = 2, speed = 2, damage = 2, range = 2, cooldown = 2 } before tick. Each field is an integer 0–5; total at most 10. Choose allocations to match the player’s strategy. Invalid builds are rejected. Missing build preserves legacy balanced stats.
+Stats: hp = 60 + 20*hp; walk_speed = 2.2 + 0.4*speed; attack_damage = 6 + 2*damage; attack_range = 1.2 + 0.15*range; attack_cooldown = 7 - cooldown ticks. A swing occurs every attack_cooldown + 1 ticks. Stats are frozen at load time.
+Both state.me and each enemy expose max_hp, walk_speed, attack_damage, attack_range, attack_cooldown. state.rules contains your own combat stats. Adapt to enemy builds.
+
 ## Script contract
 
 Define one global function, \`tick(state)\`. The game calls it once per simulation step and uses the returned table as the bot's action for that step:

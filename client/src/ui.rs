@@ -273,7 +273,7 @@ fn draw(
             prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
-            status_line(ctx, true, "Your agent is building your bot…");
+            status_line(ctx, true, "Choosing build…");
         }
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => {
             let waiting = snapshot.waiting_on();
@@ -623,7 +623,7 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 ui.label(theme::heading("Writing a good prompt"));
                 ui.add_space(4.0);
                 for line in [
-                    "Talk in what it can sense: distance, hp, cooldown, time left",
+                    "Choose a build: health, speed, damage, reach, or faster punches",
                     "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
                     "Say who to go after when there's more than one enemy",
                     "At the time limit the most hp wins, so plan for the clock",
@@ -822,7 +822,7 @@ fn bot_state(
 
     match (game.phase, status) {
         (Phase::Prompting, None) => ("Writing a Prompt", muted),
-        (Phase::Prompting, Some(SubmissionStatus::Generating)) => ("Agent Building", muted),
+        (Phase::Prompting, Some(SubmissionStatus::Generating)) => ("Choosing build…", muted),
         (Phase::Prompting, Some(SubmissionStatus::Failed)) => ("Agent Failed", bad),
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => ("Ready", good),
         // Joined while a match was already set up: no bot in it.
@@ -984,12 +984,16 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
 /// Painted directly, like the roster, so the panel doesn't jump a frame when
 /// a name changes length.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
-    const WIDTH: f32 = 220.0;
+    if matches!(snapshot.game.phase, Phase::Prompting | Phase::Countdown) {
+        loadout_cards(painter, screen, snapshot);
+        return;
+    }
+    const WIDTH: f32 = 350.0;
     const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
     const HEADING: f32 = 30.0;
-    const ROW: f32 = 40.0;
+    const ROW: f32 = 78.0;
     /// The last row ends at its bar, not at the next row.
-    const LAST_ROW: f32 = 28.0;
+    const LAST_ROW: f32 = 66.0;
     const DOT: f32 = 10.0;
     const BAR: f32 = 6.0;
 
@@ -1011,7 +1015,6 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
         theme::INK,
     );
 
-    let max_hp = snapshot.game.max_hp.max(1);
     for (i, bot) in replay.bots.iter().enumerate() {
         let top = inner.top() + HEADING + i as f32 * ROW;
         let alive = bot.action != BotAction::Dead;
@@ -1033,7 +1036,7 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             egui::pos2(inner.right(), name_y),
             egui::Align2::RIGHT_CENTER,
             if alive {
-                bot.hp.max(0).to_string()
+                format!("{} / {} HP", bot.hp.max(0), bot.max_hp)
             } else {
                 "Out".into()
             },
@@ -1046,11 +1049,174 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             egui::vec2(inner.width(), BAR),
         );
         painter.rect_filled(bar, BAR / 2.0, theme::HP_TRACK);
-        let health = (bot.hp as f32 / max_hp as f32).clamp(0.0, 1.0);
+        let health = (bot.hp as f32 / bot.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
             let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
             painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
         }
+        let points = snapshot.submission_of(bot.id).map(|s| s.build.as_slice());
+        let balanced = [2, 2, 2, 2, 2];
+        if let Some(points) = points
+            .filter(|p| p.len() == 5)
+            .or_else(|| (bot.id == HOUSE_BOT_ID).then_some(balanced.as_slice()))
+        {
+            stat_strip(
+                painter,
+                egui::pos2(inner.left(), top + 50.0),
+                inner.width(),
+                points,
+                ink,
+            );
+        }
+    }
+}
+
+/// Percentage changes in actual stats from the balanced default build.
+fn stat_strip(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    width: f32,
+    points: &[u32],
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(1.1, color);
+    const GAP: f32 = 6.0;
+    let pill_width = (width - GAP * 4.0) / 5.0;
+    for (i, point) in points.iter().take(5).enumerate() {
+        let point = *point as f32;
+        let (value, default) = match i {
+            0 => (60.0 + 20.0 * point, 100.0),
+            1 => (2.2 + 0.4 * point, 3.0),
+            2 => (6.0 + 2.0 * point, 10.0),
+            3 => (1.2 + 0.15 * point, 1.5),
+            // Clock represents cooldown duration: negative is less waiting.
+            _ => (7.0 - point, 5.0),
+        };
+        let percent = ((value / default - 1.0) * 100.0).round() as i32;
+        let text = painter.layout_no_wrap(
+            format!("{percent:+}%"),
+            egui::FontId::proportional(theme::SIZE_SMALL),
+            color,
+        );
+        let pill = egui::Rect::from_center_size(
+            at + egui::vec2(i as f32 * (pill_width + GAP) + pill_width / 2.0, 0.0),
+            egui::vec2(pill_width, 24.0),
+        );
+        painter.rect_filled(pill, 12.0, theme::FIELD_FILL);
+        // Center the combined icon + gap + visible text, using glyph ink bounds.
+        let content_width = 9.0 + 5.0 + text.mesh_bounds.width();
+        let c = egui::pos2(pill.center().x - content_width / 2.0 + 4.5, pill.center().y);
+        let p = |x, y| c + egui::vec2(x, y) * 0.75;
+        match i {
+            0 => {
+                // Heart: health.
+                painter.circle_filled(p(-2.5, -2.0), 2.625, color);
+                painter.circle_filled(p(2.5, -2.0), 2.625, color);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![p(-5.5, -1.0), p(5.5, -1.0), p(0.0, 6.0)],
+                    color,
+                    egui::Stroke::NONE,
+                ));
+            }
+            1 => {
+                // Lightning: movement speed.
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        p(1.0, -6.0),
+                        p(-5.0, 1.0),
+                        p(0.0, 1.0),
+                        p(-1.0, 6.0),
+                        p(5.0, -1.0),
+                        p(0.0, -1.0),
+                    ],
+                    color,
+                    egui::Stroke::NONE,
+                ));
+            }
+            2 => {
+                // Sword: attack power.
+                painter.line_segment([p(-4.0, 5.0), p(4.0, -5.0)], stroke);
+                painter.line_segment([p(-5.0, 0.0), p(0.0, 5.0)], stroke);
+                painter.line_segment([p(1.0, -5.0), p(4.0, -5.0)], stroke);
+            }
+            3 => {
+                // Outward arrows: attack reach.
+                painter.line_segment([p(-6.0, 0.0), p(6.0, 0.0)], stroke);
+                for sign in [-1.0, 1.0] {
+                    painter.line_segment([p(sign * 3.0, -3.0), p(sign * 6.0, 0.0)], stroke);
+                    painter.line_segment([p(sign * 3.0, 3.0), p(sign * 6.0, 0.0)], stroke);
+                }
+            }
+            _ => {
+                // Clock: attack recovery.
+                painter.circle_stroke(c, 4.125, stroke);
+                painter.line_segment([p(0.0, -3.5), c], stroke);
+                painter.line_segment([c, p(3.0, 1.0)], stroke);
+            }
+        }
+        let text_at = egui::pos2(
+            c.x + 9.5 - text.mesh_bounds.left(),
+            pill.center().y - text.mesh_bounds.center().y,
+        );
+        painter.galley(text_at, text, color);
+    }
+}
+
+/// During prompting and countdown, only the caller's build is visible.
+fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot) {
+    let sub = snapshot.submission_of(snapshot.me.id);
+    let ready = sub.filter(|s| s.status == SubmissionStatus::Ready && s.build.len() == 5);
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(screen.left() + EDGE, screen.center().y - 65.0),
+        egui::vec2(350.0, 140.0),
+    );
+    theme::panel(painter, outer);
+    let inner = outer.shrink(16.0);
+    painter.text(
+        inner.left_top(),
+        egui::Align2::LEFT_TOP,
+        "Your build",
+        theme::bold(theme::SIZE_HEADING),
+        theme::INK,
+    );
+    if let Some(sub) = ready {
+        painter.text(
+            inner.left_top() + egui::vec2(0.0, 30.0),
+            egui::Align2::LEFT_TOP,
+            format!("{} / {} HP", sub.max_hp, sub.max_hp),
+            egui::FontId::proportional(theme::SIZE_SMALL),
+            theme::INK,
+        );
+        let [r, g, b] = bot_color(snapshot.me.id);
+        let color = egui::Color32::from_rgb(r, g, b);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                inner.left_top() + egui::vec2(0.0, 51.0),
+                egui::vec2(inner.width(), 6.0),
+            ),
+            3.0,
+            color,
+        );
+        stat_strip(
+            painter,
+            inner.left_top() + egui::vec2(0.0, 81.0),
+            inner.width(),
+            &sub.build,
+            theme::INK,
+        );
+    } else {
+        let text = match sub.map(|s| s.status) {
+            Some(SubmissionStatus::Generating) => "Choosing build…",
+            Some(SubmissionStatus::Failed) => "Build failed · try another prompt",
+            _ => "Waiting for your prompt",
+        };
+        painter.text(
+            inner.left_top() + egui::vec2(0.0, 40.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            egui::FontId::proportional(theme::SIZE_SMALL),
+            theme::INK_MUTED,
+        );
     }
 }
 
