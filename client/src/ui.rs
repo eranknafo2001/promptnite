@@ -83,6 +83,10 @@ struct Form {
     name: String,
     room: String,
     prompt: String,
+    /// The prompt we last sent, and the last one that came back as a bot.
+    /// Sending that one again keeps the bot (the server skips the agent).
+    sent: String,
+    built: String,
     /// Whether `name` was already filled in from an earlier visit.
     prefilled: bool,
     /// The text box we last moved the keyboard focus to, so each screen
@@ -266,6 +270,10 @@ fn draw(
         room_settings(ctx, game, dim, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
+    // Whatever the phase: the last bot ready starts the countdown at once.
+    if submission.is_some_and(|s| s.status == SubmissionStatus::Ready) && form.built != form.sent {
+        form.built = form.sent.clone();
+    }
     match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
@@ -445,7 +453,12 @@ fn prompt_box(
                         ui.label(small(format!("Round {}", snapshot.game.round)));
                     });
                 });
-                ui.label(small("Tell your agent how your bot should fight."));
+                let unchanged = !form.built.is_empty() && form.prompt.trim() == form.built;
+                ui.label(small(if unchanged {
+                    "Send it as it is to keep the same bot, or change it for a new one."
+                } else {
+                    "Tell your agent how your bot should fight."
+                }));
                 ui.add_space(8.0);
                 // A prompt the server would not take at all comes before one
                 // whose agent failed.
@@ -516,6 +529,7 @@ fn prompt_box(
                 let prompt = form.prompt.trim();
                 if (shortcut || clicked) && !prompt.is_empty() {
                     actions.write(Action::SubmitPrompt(prompt.to_string()));
+                    form.sent = prompt.to_string();
                 }
             });
         });

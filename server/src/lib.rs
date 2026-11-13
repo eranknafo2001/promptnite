@@ -228,6 +228,10 @@ pub struct Submission {
 /// A player's prompt and the Lua their agent wrote. Private, and on purpose
 /// not exposed through any view: players never see the script, not even their
 /// own. Clients only get the `submission` status.
+///
+/// The row outlives its round (until the player sends another prompt or
+/// changes rooms), so the same prompt sent again gets the same script back
+/// without a model call. `round` says which round it last entered.
 #[table(accessor = bot_script)]
 pub struct BotScript {
     #[primary_key]
@@ -615,6 +619,17 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         }
     }
 
+    // The same prompt as last time keeps the bot it got: no model call. The
+    // script is checked again because the rules may have changed under it.
+    let kept = ctx
+        .db
+        .bot_script()
+        .player_id()
+        .find(player.id)
+        .filter(|last| last.prompt == prompt && !last.script.is_empty())
+        .map(|last| last.script)
+        .filter(|script| sim::validate_script(script).is_ok());
+
     clear_entry(ctx, player.id);
     ctx.db.submission().insert(Submission {
         player_id: player.id,
@@ -632,6 +647,15 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         script: String::new(),
     });
 
+    if let Some(script) = kept {
+        emit(
+            ctx,
+            Level::Info,
+            "script reused",
+            json!({ "player_id": player.id, "room_id": room.id, "round": room.round }),
+        );
+        return accept_script(ctx, player.id, script);
+    }
     if agent_url(ctx).is_none() {
         // No agent configured: everyone gets the example bot, so the game
         // loop can be tried without a worker or an API key.
@@ -1148,8 +1172,11 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
                 .filter(room_id)
                 .map(|row| row.player_id)
                 .collect();
+            // The scripts stay: sending the same prompt again next round
+            // reuses the bot instead of asking the agent for a new one.
             for player_id in entries {
-                clear_entry(ctx, player_id);
+                ctx.db.submission().player_id().delete(player_id);
+                ctx.db.agent_job().player_id().delete(player_id);
             }
             ctx.db.room().id().update(Room {
                 round: room.round + 1,
@@ -1422,7 +1449,7 @@ fn player_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
     Ok((player, room))
 }
 
-/// Remove everything a player submitted this round.
+/// Remove everything a player submitted, the kept script included.
 fn clear_entry(ctx: &ReducerContext, player_id: u32) {
     ctx.db.submission().player_id().delete(player_id);
     ctx.db.bot_script().player_id().delete(player_id);
