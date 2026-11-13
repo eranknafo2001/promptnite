@@ -28,6 +28,7 @@ use promptnite_bindings::*;
 
 use crate::{
     arena::{ArenaCamera, BotView, Replay},
+    clipboard,
     theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
@@ -136,7 +137,7 @@ fn setup(mut commands: Commands, mut settings: ResMut<EguiGlobalSettings>) {
     ));
 }
 
-fn is_mac() -> bool {
+pub fn is_mac() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
         web_sys::window()
@@ -381,7 +382,8 @@ fn join_screen(
 
 /// One single-line box of the join screen.
 fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) -> egui::Response {
-    ui.add(
+    let field = clipboard::show(
+        ui,
         egui::TextEdit::singleline(text)
             .hint_text(hint.to_owned())
             .char_limit(limit)
@@ -390,7 +392,12 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
             .horizontal_align(egui::Align::Center)
             .desired_width(f32::INFINITY)
             .frame(theme::field_frame()),
-    )
+    );
+    // On the desktop, text pasted from several lines keeps its line breaks.
+    if text.contains(['\r', '\n']) {
+        *text = text.replace(['\r', '\n'], " ");
+    }
+    field
 }
 
 /// Second screen, every round: the prompt, in a column down the right side
@@ -485,7 +492,8 @@ fn prompt_box(
                         .max_height(text_height)
                         .auto_shrink(false)
                         .show(ui, |ui| {
-                            let field = ui.add(
+                            let field = clipboard::show(
+                                ui,
                                 egui::TextEdit::multiline(&mut form.prompt)
                                     .hint_text("Rush the weakest bot, then circle the edge…")
                                     .char_limit(MAX_PROMPT_CHARS)
