@@ -270,6 +270,10 @@ fn draw(
         room_settings(ctx, game, dim, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
+    // Whatever the phase: the last bot ready starts the countdown at once.
+    if submission.is_some_and(|s| s.status == SubmissionStatus::Ready) && form.built != form.sent {
+        form.built = form.sent.clone();
+    }
     match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
@@ -280,9 +284,6 @@ fn draw(
             status_line(ctx, true, "Choosing build…");
         }
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => {
-            if form.built != form.sent {
-                form.built = form.sent.clone();
-            }
             let waiting = snapshot.waiting_on();
             let alone = snapshot.players.iter().filter(|p| p.online).count() < 2;
             let text = if !waiting.is_empty() {
