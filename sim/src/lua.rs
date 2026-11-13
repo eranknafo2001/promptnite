@@ -42,6 +42,7 @@ pub struct BotView<'a> {
 
 #[derive(Clone, Copy)]
 pub struct Seen {
+    pub stats: rules::Stats,
     pub id: u32,
     pub x: f32,
     pub y: f32,
@@ -51,6 +52,7 @@ pub struct Seen {
 }
 
 pub struct LuaBot {
+    pub stats: rules::Stats,
     lua: Lua,
     executor: StashedExecutor,
     tick_fn: StashedFunction,
@@ -90,15 +92,9 @@ impl LuaBot {
         let floor = lua.total_memory();
 
         // Seed first so the player's own top-level code already sees a
-        // deterministic RNG. Kept as a separate chunk so error line numbers
+        // deterministic initialization RNG. Kept separate so error line numbers
         // in the player's script stay correct.
-        run_chunk(
-            &mut lua,
-            &executor,
-            floor,
-            "seed",
-            &format!("math.randomseed({seed})"),
-        )?;
+        run_chunk(&mut lua, &executor, floor, "seed", "math.randomseed(0)")?;
         run_chunk(&mut lua, &executor, floor, "bot", source)?;
 
         let tick_fn = lua.enter(|ctx| match ctx.get_global("tick") {
@@ -109,7 +105,48 @@ impl LuaBot {
             )),
         })?;
 
+        let stats = lua.enter(|ctx| {
+            let table = match ctx.get_global("build") {
+                Value::Nil => return Ok(rules::Stats::default()),
+                Value::Table(t) => t,
+                _ => return Err("build must be a table".to_string()),
+            };
+            let mut points = [0u32; 5];
+            for (i, key) in ["hp", "speed", "damage", "range", "cooldown"]
+                .iter()
+                .enumerate()
+            {
+                let n = table
+                    .get(ctx, *key)
+                    .to_number()
+                    .ok_or_else(|| format!("build.{key} must be an integer from 0 to 5"))?;
+                if !n.is_finite() || n.fract() != 0.0 || !(0.0..=5.0).contains(&n) {
+                    return Err(format!("build.{key} must be an integer from 0 to 5"));
+                }
+                points[i] = n as u32;
+            }
+            if points.iter().sum::<u32>() > 10 {
+                return Err("build exceeds the 10 point budget".into());
+            }
+            Ok(rules::Stats {
+                max_hp: 60 + 20 * points[0] as i32,
+                walk_speed: 2.2 + 0.4 * points[1] as f32,
+                attack_damage: 6 + 2 * points[2] as i32,
+                attack_range: 1.2 + 0.15 * points[3] as f32,
+                attack_cooldown: 7 - points[4],
+            })
+        })?;
+        // Build selection must match validation and the pre-fight preview.
+        // Match-specific randomness starts only after the immutable stats are read.
+        run_chunk(
+            &mut lua,
+            &executor,
+            floor,
+            "seed",
+            &format!("math.randomseed({seed})"),
+        )?;
         Ok(Self {
+            stats,
             lua,
             executor,
             tick_fn,
@@ -322,16 +359,16 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
     let r = Table::new(&ctx);
     set(ctx, r, "ticks_per_sec", rules::TICKS_PER_SEC as i64);
     set(ctx, r, "max_ticks", view.max_ticks as i64);
-    set(ctx, r, "walk_speed", rules::WALK_SPEED as f64);
-    set(ctx, r, "attack_range", rules::ATTACK_RANGE as f64);
-    set(ctx, r, "attack_damage", rules::ATTACK_DAMAGE as i64);
+    set(ctx, r, "walk_speed", view.me.stats.walk_speed as f64);
+    set(ctx, r, "attack_range", view.me.stats.attack_range as f64);
+    set(ctx, r, "attack_damage", view.me.stats.attack_damage as i64);
     set(
         ctx,
         r,
         "attack_cooldown",
-        rules::ATTACK_COOLDOWN_TICKS as i64,
+        view.me.stats.attack_cooldown as i64,
     );
-    set(ctx, r, "max_hp", rules::MAX_HP as i64);
+    set(ctx, r, "max_hp", view.me.stats.max_hp as i64);
     set(ctx, state, "rules", r);
 
     state
@@ -343,6 +380,16 @@ fn seen_table<'gc>(ctx: Context<'gc>, seen: &Seen) -> Table<'gc> {
     set(ctx, table, "x", seen.x as f64);
     set(ctx, table, "y", seen.y as f64);
     set(ctx, table, "hp", seen.hp as i64);
+    set(ctx, table, "max_hp", seen.stats.max_hp as i64);
+    set(ctx, table, "walk_speed", seen.stats.walk_speed as f64);
+    set(ctx, table, "attack_range", seen.stats.attack_range as f64);
+    set(ctx, table, "attack_damage", seen.stats.attack_damage as i64);
+    set(
+        ctx,
+        table,
+        "attack_cooldown",
+        seen.stats.attack_cooldown as i64,
+    );
     table
 }
 

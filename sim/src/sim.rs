@@ -78,6 +78,7 @@ pub struct MatchOutcome {
 }
 
 struct Bot {
+    stats: rules::Stats,
     id: u32,
     x: f32,
     y: f32,
@@ -144,11 +145,13 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
                     None
                 }
             };
+            let stats = lua.as_ref().map(|l| l.stats).unwrap_or_default();
             Bot {
+                stats,
                 id: spec.id,
                 x: dx * spawn_dist,
                 y: dy * spawn_dist,
-                hp: rules::MAX_HP,
+                hp: stats.max_hp,
                 cooldown: 0,
                 faulted: lua.is_none(),
                 lua,
@@ -181,9 +184,10 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
             .collect();
 
         // 2. Movement.
-        let step = rules::WALK_SPEED / rules::TICKS_PER_SEC as f32;
+
         let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
+            let step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
             if let Action::Walk { dx, dy } = actions[i] {
                 let len = (dx * dx + dy * dy).sqrt();
                 if bot.alive() && len > 1e-6 {
@@ -202,10 +206,10 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
                 continue;
             }
             if actions[i] == Action::Attack && bots[i].cooldown == 0 {
-                bots[i].cooldown = rules::ATTACK_COOLDOWN_TICKS;
+                bots[i].cooldown = bots[i].stats.attack_cooldown;
                 match nearest_enemy(&bots, i) {
-                    Some((target, dist)) if dist <= rules::ATTACK_RANGE => {
-                        damage[target] += rules::ATTACK_DAMAGE;
+                    Some((target, dist)) if dist <= bots[i].stats.attack_range => {
+                        damage[target] += bots[i].stats.attack_damage;
                         did[i] = ActionKind::Attack;
                     }
                     _ => did[i] = ActionKind::Miss,
@@ -253,6 +257,7 @@ fn decide(
         .enumerate()
         .filter(|(j, other)| *j != i && other.alive())
         .map(|(_, other)| Seen {
+            stats: other.stats,
             id: other.id,
             x: other.x,
             y: other.y,
@@ -264,6 +269,7 @@ fn decide(
         tick,
         max_ticks,
         me: Seen {
+            stats: me.stats,
             id: me.id,
             x: me.x,
             y: me.y,
@@ -357,6 +363,33 @@ mod tests {
     }
 
     const IDLE: &str = "function tick(state) return nil end";
+
+    #[test]
+    fn loadouts_are_validated_and_applied() {
+        for build in [
+            "{hp=5,speed=5,damage=5,range=0,cooldown=0}",
+            "{hp=-1}",
+            "{hp=0/0}",
+        ] {
+            assert!(validate_script(&format!("build={build} function tick() end")).is_err());
+        }
+        let script = "build={hp=5,speed=5,damage=0,range=0,cooldown=0} function tick(s) assert(s.me.max_hp==160 and s.rules.attack_damage==6 and s.enemies[1].max_hp==100) return {action='walk',dx=1,dy=0} end";
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], 0, 1);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+        assert_eq!(out.frames[0].bots[0].hp, 160);
+        assert!((out.frames[1].bots[0].x - 0.42).abs() < 0.001);
+    }
+
+    #[test]
+    fn build_selection_matches_preview_for_every_match_seed() {
+        let script = "build={hp=math.random(0,5),speed=0,damage=0,range=0,cooldown=0} function tick(s) build.hp=5 end";
+        let preview = LuaBot::new(script, 0).unwrap().stats;
+        for seed in [1, 42, 999] {
+            let out = super::run_match(&[spec(1, script), spec(2, IDLE)], seed, 2);
+            assert_eq!(out.frames[0].bots[0].hp, preview.max_hp);
+            assert_eq!(out.frames.last().unwrap().bots[0].hp, preview.max_hp);
+        }
+    }
 
     #[test]
     fn example_script_is_valid() {

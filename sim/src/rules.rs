@@ -92,3 +92,24 @@ pub const MAX_UNPACK_VALUES: usize = 1024;
 
 /// Largest script we accept, in bytes.
 pub const MAX_SCRIPT_BYTES: usize = 16 * 1024;
+
+/// Immutable stats selected once when a script loads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stats {
+    pub max_hp: i32,
+    pub walk_speed: f32,
+    pub attack_damage: i32,
+    pub attack_range: f32,
+    pub attack_cooldown: u32,
+}
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            max_hp: MAX_HP,
+            walk_speed: WALK_SPEED,
+            attack_damage: ATTACK_DAMAGE,
+            attack_range: ATTACK_RANGE,
+            attack_cooldown: ATTACK_COOLDOWN_TICKS,
+        }
+    }
+}

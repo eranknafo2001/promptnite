@@ -175,3 +175,19 @@ default; override with `?uri=…&db=…`. The desktop client reads `PROMPTNITE_U
 and `PROMPTNITE_DB`.
 
 Created in [T3 Code](https://t3.codes).
+
+### Bot loadouts
+
+Generated bots allocate up to 10 points across `hp`, `speed`, `damage`,
+`range`, and `cooldown` (integer 0–5 each):
+
+```lua
+build = { hp = 1, speed = 4, damage = 1, range = 3, cooldown = 1 }
+```
+
+Build initialization uses a fixed seed so the preview matches combat; tick-time
+randomness uses the match seed. Stats are fixed when the script loads. HP is `60 + 20*hp`, speed is
+`2.2 + 0.4*speed`, damage is `6 + 2*damage`, reach is `1.2 + 0.15*range`,
+and cooldown is `7 - cooldown` ticks. Missing builds retain legacy stats;
+invalid declarations are rejected by script validation. Both `state.me` and
+enemies expose the resulting stats; `state.rules` reflects the acting bot.
