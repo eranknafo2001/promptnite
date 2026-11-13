@@ -27,7 +27,10 @@ use piccolo::{
     StashedExecutor, StashedFunction, Table, Value, constant::Constant, opcode::Operation, stdlib,
 };
 
-use crate::{rules, sim::Action};
+use crate::{
+    rules,
+    sim::{Action, Teleporter},
+};
 
 /// What a bot can see when it decides its action.
 pub struct BotView<'a> {
@@ -36,8 +39,11 @@ pub struct BotView<'a> {
     pub max_ticks: u32,
     pub me: Seen,
     pub cooldown: u32,
+    /// Ticks until this bot may teleport again.
+    pub teleport_cooldown: u32,
     /// Living enemies only.
     pub enemies: &'a [Seen],
+    pub teleporters: &'a [Teleporter],
 }
 
 #[derive(Clone, Copy)]
@@ -341,6 +347,7 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
 
     let me = seen_table(ctx, &view.me);
     set(ctx, me, "cooldown", view.cooldown as i64);
+    set(ctx, me, "teleport_cooldown", view.teleport_cooldown as i64);
     set(ctx, state, "me", me);
 
     let enemies = Table::new(&ctx);
@@ -351,6 +358,18 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         let _ = enemies.set(ctx, (i + 1) as i64, row);
     }
     set(ctx, state, "enemies", enemies);
+
+    let teleporters = Table::new(&ctx);
+    for (i, pad) in view.teleporters.iter().enumerate() {
+        let row = Table::new(&ctx);
+        set(ctx, row, "id", pad.id as i64);
+        set(ctx, row, "x", pad.x as f64);
+        set(ctx, row, "y", pad.y as f64);
+        let dist = ((pad.x - view.me.x).powi(2) + (pad.y - view.me.y).powi(2)).sqrt();
+        set(ctx, row, "dist", dist as f64);
+        let _ = teleporters.set(ctx, (i + 1) as i64, row);
+    }
+    set(ctx, state, "teleporters", teleporters);
 
     let arena = Table::new(&ctx);
     set(ctx, arena, "half_size", rules::ARENA_HALF_SIZE as f64);
@@ -369,6 +388,12 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         view.me.stats.attack_cooldown as i64,
     );
     set(ctx, r, "max_hp", view.me.stats.max_hp as i64);
+    set(
+        ctx,
+        r,
+        "teleport_cooldown",
+        rules::TELEPORT_COOLDOWN_TICKS as i64,
+    );
     set(ctx, state, "rules", r);
 
     state
@@ -440,8 +465,28 @@ fn parse_action<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Result<Action, Str
                 Err("walk direction must be finite numbers".into())
             }
         }
+        b"teleport" => {
+            // Pads are numbered from 1; anything else is not a pad's number.
+            let pad = |key: &'static str| -> Result<Option<u32>, String> {
+                match args.map(|table| table.get(ctx, key)).unwrap_or(Value::Nil) {
+                    Value::Nil => Ok(None),
+                    value => match value.to_number() {
+                        Some(n) if n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n) => {
+                            Ok(Some(n as u32))
+                        }
+                        _ => Err(format!("teleport `{key}` must be a teleporter's id")),
+                    },
+                }
+            };
+            let to =
+                pad("to")?.ok_or("teleport needs `to`, the id of the teleporter to come out of")?;
+            Ok(Action::Teleport {
+                from: pad("from")?,
+                to,
+            })
+        }
         _ => Err(format!(
-            "unknown action \"{}\" (expected walk, attack or idle)",
+            "unknown action \"{}\" (expected walk, attack, teleport or idle)",
             name.to_str_lossy()
         )),
     }

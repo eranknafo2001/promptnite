@@ -60,6 +60,22 @@ pub const ATTACK_DAMAGE: i32 = 10;
 /// Ticks a bot must wait after attacking before it can attack again.
 pub const ATTACK_COOLDOWN_TICKS: u32 = 5;
 
+// --- Teleporters -----------------------------------------------------------
+
+/// Most teleporter pads a room's owner may place.
+pub const MAX_TELEPORTERS: usize = 8;
+
+/// Radius of a pad (the client's model, `assets/blender/teleporter.py`).
+pub const TELEPORTER_RADIUS: f32 = 0.9;
+
+/// Two pads' centres are at least this far apart, so pads never overlap and
+/// a teleport is always a longer jump than any walking step.
+pub const TELEPORTER_SPACING: f32 = 2.5;
+
+/// Ticks a bot must wait after teleporting before it can teleport again.
+/// Without it a bot could hop between two pads every tick and never be hit.
+pub const TELEPORT_COOLDOWN_TICKS: u32 = 30;
+
 // --- Sandbox limits for untrusted Lua -------------------------------------
 
 /// Fuel a script may spend while loading (top-level code). The VM charges

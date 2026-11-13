@@ -40,6 +40,7 @@ enum SubKey {
     Submissions,
     Frames,
     Faults,
+    Teleporters,
 }
 
 /// Where we are connecting to.
@@ -162,6 +163,12 @@ fn snapshot(conn: &Conn, session: &Session) -> Option<Snapshot> {
         .filter(|player| player.room_id == game.id)
         .collect();
     players.sort_by_key(|player| player.id);
+    let mut teleporters: Vec<Teleporter> = db
+        .room_teleporters()
+        .iter()
+        .filter(|pad| pad.room_id == game.id)
+        .collect();
+    teleporters.sort_by_key(|pad| pad.number);
     Some(Snapshot {
         submissions: db
             .room_submissions()
@@ -176,6 +183,7 @@ fn snapshot(conn: &Conn, session: &Session) -> Option<Snapshot> {
         prompt_refusal: session.prompt_refusal.lock().unwrap().clone(),
         game,
         players,
+        teleporters,
         me,
     })
 }
@@ -209,6 +217,10 @@ fn perform(
                 },
                 Some(conn),
             ) => conn.reducers().set_room_settings(match_secs, house_bot),
+            (Action::AddTeleporter { x, y }, Some(conn)) => conn.reducers().add_teleporter(x, y),
+            (Action::RemoveTeleporter(number), Some(conn)) => {
+                conn.reducers().remove_teleporter(number)
+            }
             (_, None) => Ok(()),
         };
         if let Err(err) = result {
@@ -244,6 +256,7 @@ fn on_connected(
     subs.subscribe_query(SubKey::Submissions, |q| q.from.room_submissions());
     subs.subscribe_query(SubKey::Frames, |q| q.from.match_frames());
     subs.subscribe_query(SubKey::Faults, |q| q.from.match_faults());
+    subs.subscribe_query(SubKey::Teleporters, |q| q.from.room_teleporters());
 }
 
 fn send_join(conn: Option<Res<Conn>>, mut session: ResMut<Session>) {

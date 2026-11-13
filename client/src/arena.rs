@@ -37,7 +37,16 @@ pub struct BotView {
     pub radius: f32,
     pub hp: i32,
     pub action: BotAction,
+    /// Set for the one tick in which the bot jumps between two teleporters:
+    /// the points on the floor it leaves from and comes out at.
+    pub teleport: Option<(Vec3, Vec3)>,
 }
+
+/// Further than a bot gets in one tick on foot, even with a shove from
+/// another bot, and less than the gap between any two teleporters
+/// (`TELEPORTER_SPACING` in `sim/src/rules.rs`): a bot that moved this far
+/// between two frames jumped.
+const TELEPORT_JUMP: f32 = 1.5;
 
 /// The camera that looks at the arena (as opposed to the UI camera).
 #[derive(Component)]
@@ -700,8 +709,16 @@ pub fn replay(
             .as_ref()
             .and_then(|frame| frame.bots.iter().find(|b| b.player_id == bot.player_id))
             .unwrap_or(bot);
-        let x = bot.x + (next.x - bot.x) * blend;
-        let y = bot.y + (next.y - bot.y) * blend;
+        let jumped = (next.x - bot.x).hypot(next.y - bot.y) > TELEPORT_JUMP;
+        let (x, y) = match (jumped, blend < 0.5) {
+            // A jump is not a slide: here for half the tick, then there.
+            (true, true) => (bot.x, bot.y),
+            (true, false) => (next.x, next.y),
+            (false, _) => (
+                bot.x + (next.x - bot.x) * blend,
+                bot.y + (next.y - bot.y) * blend,
+            ),
+        };
         replay.bots.push(BotView {
             max_hp: conn
                 .db()
@@ -716,6 +733,8 @@ pub fn replay(
             radius: room.bot_radius,
             hp: next.hp,
             action: next.action,
+            teleport: jumped
+                .then(|| (Vec3::new(bot.x, 0.0, bot.y), Vec3::new(next.x, 0.0, next.y))),
         });
     }
 }

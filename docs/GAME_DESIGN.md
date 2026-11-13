@@ -24,10 +24,15 @@ The first player in creates the room and is its **owner**. The owner sets:
 - **House bot**: whether the built-in reference bot fights in every match.
   On by default, so a room can be played alone. It takes an edge no player
   is using, so with four players it sits out.
+- **Teleporters**: up to eight pads, anywhere on the roof a bot can stand,
+  at least 2.5 units apart. The owner places and removes them by clicking
+  the roof while everybody is prompting. Each pad shows its number, which is
+  what prompts and scripts call it. None by default.
 
 Changes apply from the next match. The owner stays the owner while anybody is
 in the room, even while they are away themselves. A room everybody has left
-goes to the next player who enters it, with the settings back to default.
+goes to the next player who enters it, with the settings back to default and
+the teleporters gone.
 
 ## Round loop
 
@@ -49,9 +54,19 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
 | attack | `{ action = "attack" }` | Punch the nearest enemy in range |
+| teleport | `{ action = "teleport", to = 2 }` | One step towards a teleporter; on reaching it, jump to pad `to` |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
 One action per tick: a bot cannot walk and punch at once.
+
+**Teleporting** takes a pad to walk to and a pad to come out of. The bot walks
+straight to the nearest pad other than `to` (or to the pad named with
+`from = <id>`). The step that reaches the pad lands on its exact position, and
+in that same tick the bot appears at the exact position of pad `to`; from the
+next tick on it is free to walk off. After a jump a bot cannot teleport again
+for 30 ticks (it can still walk onto a pad and wait there), so nobody escapes
+for ever by hopping between two pads. Any bot can use any pad. Naming a pad
+that does not exist costs the bot its turn, like any script error.
 
 The original sketch also lists **run**. It is not implemented yet; see
 "Open questions".
@@ -61,11 +76,13 @@ The original sketch also lists **run**. It is not implemented yet; see
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, cooldown }
+  -- state.me      { id, x, y, hp, cooldown, teleport_cooldown }
   -- state.enemies { { id, x, y, hp, dist }, ... }   living enemies only
+  -- state.teleporters { { id, x, y, dist }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
-  --                 attack_damage, attack_cooldown, max_hp }
+  --                 attack_damage, attack_cooldown, max_hp,
+  --                 teleport_cooldown }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -112,7 +129,11 @@ there are no panels.
   (they joined while a match was already running). The house bot is listed
   too while it is part of the game.
 - **Room settings**: top left, for the room's owner only and only during
-  prompting: the controls for match length and house bot.
+  prompting: the controls for match length and house bot, and the switch
+  that turns clicks on the roof into placing and removing teleporters.
+- **Teleporters**: a dark pad with glowing segments and its number, modelled
+  in Blender (`assets/blender/teleporter.py`). When a bot jumps, a flame
+  shoots up from the pad it left and the pad it came out of.
 - **Arena overlays**: name and health bar above each bot, the big countdown
   and result text, and (top left, during and after a fight) scripts that broke.
 

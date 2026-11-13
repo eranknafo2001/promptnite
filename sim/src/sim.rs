@@ -20,6 +20,16 @@ pub struct BotSpec {
     pub script: String,
 }
 
+/// A pad the room's owner placed. A bot that stands on one pad's exact
+/// position can jump to any other pad's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Teleporter {
+    /// The number players see on the pad, and what scripts call it.
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
 /// What a script asked for on one tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
@@ -30,6 +40,12 @@ pub enum Action {
         dy: f32,
     },
     Attack,
+    /// Walk towards pad `from` and, once standing on it, jump to pad `to`.
+    /// Without `from`, the nearest pad other than `to` is used.
+    Teleport {
+        from: Option<u32>,
+        to: u32,
+    },
 }
 
 /// What a bot actually did on a tick, for rendering.
@@ -84,6 +100,8 @@ struct Bot {
     y: f32,
     hp: i32,
     cooldown: u32,
+    /// Ticks until the bot may teleport again.
+    teleport_cooldown: u32,
     /// `None` once the script is disabled (failed to load, or blew the heap cap).
     lua: Option<LuaBot>,
     faulted: bool,
@@ -124,9 +142,48 @@ fn separate(bots: &mut [Bot], limit: f32) {
     }
 }
 
+/// The pads a `teleport` action goes through: the one to walk to and the one
+/// to come out of.
+fn route(
+    teleporters: &[Teleporter],
+    (x, y): (f32, f32),
+    from: Option<u32>,
+    to: u32,
+) -> Result<(Teleporter, Teleporter), String> {
+    let find = |id: u32| {
+        teleporters
+            .iter()
+            .find(|pad| pad.id == id)
+            .copied()
+            .ok_or_else(|| format!("there is no teleporter {id}"))
+    };
+    let dst = find(to)?;
+    let src = match from {
+        Some(id) if id == to => {
+            return Err(format!("cannot teleport from teleporter {id} to itself"));
+        }
+        Some(id) => find(id)?,
+        None => teleporters
+            .iter()
+            .filter(|pad| pad.id != to)
+            .min_by(|a, b| {
+                let dist = |pad: &Teleporter| (pad.x - x).powi(2) + (pad.y - y).powi(2);
+                dist(a).total_cmp(&dist(b))
+            })
+            .copied()
+            .ok_or("there is no other teleporter to teleport from")?,
+    };
+    Ok((src, dst))
+}
+
 /// Simulate a full match of at most `max_ticks` ticks. Deterministic for a
-/// given `(specs, seed, max_ticks)`.
-pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
+/// given `(specs, teleporters, seed, max_ticks)`.
+pub fn run_match(
+    specs: &[BotSpec],
+    teleporters: &[Teleporter],
+    seed: u64,
+    max_ticks: u32,
+) -> MatchOutcome {
     let mut faults = Vec::new();
     let spawn_dist = rules::ARENA_HALF_SIZE - rules::SPAWN_INSET;
 
@@ -153,6 +210,7 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
                 y: dy * spawn_dist,
                 hp: stats.max_hp,
                 cooldown: 0,
+                teleport_cooldown: 0,
                 faulted: lua.is_none(),
                 lua,
             }
@@ -169,7 +227,7 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
 
         // 1. Every bot decides from the same snapshot, so order doesn't matter.
         let actions: Vec<Action> = (0..bots.len())
-            .map(|i| decide(&mut bots, i, tick, max_ticks, &mut faults))
+            .map(|i| decide(&mut bots, teleporters, i, tick, max_ticks, &mut faults))
             .collect();
 
         let mut did: Vec<ActionKind> = bots
@@ -187,14 +245,46 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
 
         let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
+            bot.teleport_cooldown = bot.teleport_cooldown.saturating_sub(1);
+            if !bot.alive() {
+                continue;
+            }
             let step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
-            if let Action::Walk { dx, dy } = actions[i] {
-                let len = (dx * dx + dy * dy).sqrt();
-                if bot.alive() && len > 1e-6 {
-                    bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
-                    bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
-                    did[i] = ActionKind::Walk;
+            match actions[i] {
+                Action::Walk { dx, dy } => {
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len > 1e-6 {
+                        bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
+                        bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
+                        did[i] = ActionKind::Walk;
+                    }
                 }
+                Action::Teleport { from, to } => {
+                    // `decide` only lets a teleport through if its pads exist.
+                    let Ok((src, dst)) = route(teleporters, (bot.x, bot.y), from, to) else {
+                        continue;
+                    };
+                    let (dx, dy) = (src.x - bot.x, src.y - bot.y);
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > step {
+                        bot.x += dx / dist * step;
+                        bot.y += dy / dist * step;
+                        did[i] = ActionKind::Walk;
+                    } else if bot.teleport_cooldown == 0 {
+                        // The last step lands exactly on the pad, and the bot
+                        // comes out of the other one within the same tick.
+                        (bot.x, bot.y) = (dst.x, dst.y);
+                        bot.teleport_cooldown = rules::TELEPORT_COOLDOWN_TICKS;
+                        did[i] = ActionKind::Walk;
+                    } else {
+                        // Not ready yet: wait on the pad.
+                        if dist > 1e-6 {
+                            did[i] = ActionKind::Walk;
+                        }
+                        (bot.x, bot.y) = (src.x, src.y);
+                    }
+                }
+                Action::Idle | Action::Attack => {}
             }
         }
         separate(&mut bots, limit);
@@ -242,6 +332,7 @@ pub fn run_match(specs: &[BotSpec], seed: u64, max_ticks: u32) -> MatchOutcome {
 
 fn decide(
     bots: &mut [Bot],
+    teleporters: &[Teleporter],
     i: usize,
     tick: u32,
     max_ticks: u32,
@@ -277,8 +368,11 @@ fn decide(
             dist: 0.0,
         },
         cooldown: me.cooldown,
+        teleport_cooldown: me.teleport_cooldown,
         enemies: &enemies,
+        teleporters,
     };
+    let at = (me.x, me.y);
 
     let bot = &mut bots[i];
     let lua = bot.lua.as_mut().expect("checked above");
@@ -287,6 +381,12 @@ fn decide(
         // Not a lost turn: the script is switched off for the rest of the match.
         bot.lua = None;
     }
+
+    // A teleport that names a pad that does not exist is a script error too.
+    let result = result.and_then(|action| match action {
+        Action::Teleport { from, to } => route(teleporters, at, from, to).map(|_| action),
+        _ => Ok(action),
+    });
 
     result.unwrap_or_else(|message| {
         // A broken tick just loses the turn. Report only the first one per bot.
@@ -359,7 +459,11 @@ mod tests {
     const MAX_TICKS: u32 = rules::DEFAULT_MATCH_SECS * rules::TICKS_PER_SEC;
 
     fn run_match(specs: &[BotSpec], seed: u64) -> MatchOutcome {
-        super::run_match(specs, seed, MAX_TICKS)
+        super::run_match(specs, &[], seed, MAX_TICKS)
+    }
+
+    fn pad(id: u32, x: f32, y: f32) -> Teleporter {
+        Teleporter { id, x, y }
     }
 
     const IDLE: &str = "function tick(state) return nil end";
@@ -374,7 +478,7 @@ mod tests {
             assert!(validate_script(&format!("build={build} function tick() end")).is_err());
         }
         let script = "build={hp=5,speed=5,damage=0,range=0,cooldown=0} function tick(s) assert(s.me.max_hp==160 and s.rules.attack_damage==6 and s.enemies[1].max_hp==100) return {action='walk',dx=1,dy=0} end";
-        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], 0, 1);
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &[], 0, 1);
         assert!(out.faults.is_empty(), "{:?}", out.faults);
         assert_eq!(out.frames[0].bots[0].hp, 160);
         assert!((out.frames[1].bots[0].x - 0.42).abs() < 0.001);
@@ -385,7 +489,7 @@ mod tests {
         let script = "build={hp=math.random(0,5),speed=0,damage=0,range=0,cooldown=0} function tick(s) build.hp=5 end";
         let preview = LuaBot::new(script, 0).unwrap().stats;
         for seed in [1, 42, 999] {
-            let out = super::run_match(&[spec(1, script), spec(2, IDLE)], seed, 2);
+            let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &[], seed, 2);
             assert_eq!(out.frames[0].bots[0].hp, preview.max_hp);
             assert_eq!(out.frames.last().unwrap().bots[0].hp, preview.max_hp);
         }
@@ -439,7 +543,7 @@ mod tests {
     #[test]
     fn match_length_is_configurable() {
         let script = "function tick(state) assert(state.rules.max_ticks == 150) end";
-        let outcome = super::run_match(&[spec(1, script), spec(2, IDLE)], 1, 150);
+        let outcome = super::run_match(&[spec(1, script), spec(2, IDLE)], &[], 1, 150);
         assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
         assert_eq!(outcome.frames.len(), 151);
     }
@@ -526,7 +630,7 @@ mod tests {
     #[test]
     fn bots_start_at_their_own_edge() {
         let specs: Vec<BotSpec> = (1..=4).map(|id| spec(id, IDLE)).collect();
-        let outcome = super::run_match(&specs, 0, 1);
+        let outcome = super::run_match(&specs, &[], 0, 1);
         let d = rules::ARENA_HALF_SIZE - rules::SPAWN_INSET;
         let at: Vec<(f32, f32)> = outcome.frames[0].bots.iter().map(|b| (b.x, b.y)).collect();
         assert_eq!(at, [(0.0, d), (0.0, -d), (d, 0.0), (-d, 0.0)]);
@@ -553,5 +657,100 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_bot_teleports_from_one_pad_to_another() {
+        // Bot 1 starts at (0, 8.5). Pad 1 is two units in front of it.
+        let pads = [pad(1, 0.0, 6.5), pad(2, -5.0, -5.0)];
+        let script = r#"function tick(state) return { action = "teleport", to = 2 } end"#;
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &pads, 0, 8);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+
+        let path: Vec<(f32, f32)> = out
+            .frames
+            .iter()
+            .map(|f| (f.bots[0].x, f.bots[0].y))
+            .collect();
+        let arrival = path.iter().position(|&at| at == (-5.0, -5.0)).unwrap();
+        // 2 units at 0.3 a tick: six full steps, and the seventh reaches the pad.
+        assert_eq!(arrival, 7);
+        // It walked straight down to the pad, and never between the two pads.
+        for at in &path[..arrival] {
+            assert!(at.0 == 0.0 && at.1 > 6.5, "{at:?}");
+        }
+    }
+
+    #[test]
+    fn a_bot_can_walk_off_the_pad_it_came_out_of() {
+        let pads = [pad(1, 0.0, 6.5), pad(2, -5.0, -5.0)];
+        let script = r#"
+            function tick(state)
+              if state.me.teleport_cooldown == 0 then return { action = "teleport", from = 1, to = 2 } end
+              return { action = "walk", dx = 1, dy = 0 }
+            end
+        "#;
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &pads, 0, 12);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+        let last = out.frames[12].bots[0];
+        assert!((last.x - -3.5).abs() < 1e-3 && last.y == -5.0, "{last:?}");
+    }
+
+    #[test]
+    fn teleporting_has_a_cooldown() {
+        // Hops back and forth as often as the game allows.
+        let pads = [pad(1, 0.0, 8.5), pad(2, 3.0, 3.0)];
+        let script = r#"
+            function tick(state)
+              local here = state.teleporters[1].dist < state.teleporters[2].dist and 1 or 2
+              assert(state.rules.teleport_cooldown == 30)
+              return { action = "teleport", to = 3 - here }
+            end
+        "#;
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &pads, 0, 100);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+        let jumps: Vec<u32> = out
+            .frames
+            .windows(2)
+            .filter(|pair| pair[0].bots[0].x != pair[1].bots[0].x)
+            .map(|pair| pair[1].tick)
+            .collect();
+        assert_eq!(jumps, [1, 31, 61, 91]);
+    }
+
+    #[test]
+    fn scripts_see_the_teleporters() {
+        let pads = [pad(4, 0.0, 6.5), pad(7, -5.0, -5.0)];
+        let script = r#"
+            function tick(state)
+              local t = state.teleporters
+              assert(#t == 2 and t[1].id == 4 and t[2].id == 7)
+              assert(t[2].x == -5 and t[2].y == -5)
+              assert(math.abs(t[1].dist - 2) < 1e-4)
+              assert(state.me.teleport_cooldown == 0)
+            end
+        "#;
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &pads, 0, 1);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+    }
+
+    #[test]
+    fn teleporting_to_a_missing_pad_is_a_fault() {
+        let pads = [pad(1, 0.0, 6.5), pad(2, -5.0, -5.0)];
+        for (action, problem) in [
+            ("{ action = 'teleport', to = 3 }", "no teleporter 3"),
+            ("{ action = 'teleport' }", "`to`"),
+            ("{ action = 'teleport', from = 2, to = 2 }", "itself"),
+        ] {
+            let script = format!("function tick() return {action} end");
+            let out = super::run_match(&[spec(1, &script), spec(2, IDLE)], &pads, 0, 3);
+            assert_eq!(out.faults.len(), 1, "{action}");
+            assert!(out.faults[0].message.contains(problem), "{:?}", out.faults);
+            assert_eq!(out.frames[3].bots[0], out.frames[0].bots[0]);
+        }
+        // A lone pad leads nowhere.
+        let script = "function tick() return { action = 'teleport', to = 1 } end";
+        let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &pads[..1], 0, 3);
+        assert!(out.faults[0].message.contains("no other teleporter"));
     }
 }

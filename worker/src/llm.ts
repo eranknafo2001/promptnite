@@ -77,6 +77,7 @@ Define one global function, \`tick(state)\`. The game calls it once per simulati
 
 - \`{ action = "walk", dx = <number>, dy = <number> }\` walks one step in the direction (dx, dy). Only the direction matters, not the length.
 - \`{ action = "attack" }\` punches the nearest enemy within \`state.rules.attack_range\`. It misses if nobody is in range and does nothing while \`state.me.cooldown > 0\`.
+- \`{ action = "teleport", to = <id> }\` heads for a teleporter pad and jumps to pad \`to\`. Each tick it walks one step straight towards the nearest pad other than \`to\` (or towards pad \`from = <id>\`, if given). On the tick it reaches that pad's exact position it comes out at pad \`to\`'s exact position instead, and from the next tick on it can walk away or attack as usual. A jump starts a cooldown of \`state.rules.teleport_cooldown\` ticks; while \`state.me.teleport_cooldown > 0\` the action still walks the bot onto the pad, where it waits. Naming a pad that is not in \`state.teleporters\` is an error.
 - \`{ action = "idle" }\` (or returning nil) does nothing.
 
 A bot does exactly one of these per tick: it cannot walk and attack in the same tick.
@@ -84,10 +85,11 @@ A bot does exactly one of these per tick: it cannot walk and attack in the same 
 \`state\` is rebuilt every tick:
 
 - \`state.tick\`: current step, starting at 1.
-- \`state.me\`: \`{ id, x, y, hp, cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again.
+- \`state.me\`: \`{ id, x, y, hp, cooldown, teleport_cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again, \`teleport_cooldown\` until it can teleport again.
 - \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
+- \`state.teleporters\`: array of teleporter pads, each \`{ id, x, y, dist }\`. The room's owner places them, so there may be none: check before teleporting, which needs at least two. Players see each pad's \`id\` as the number on it and may refer to pads by it. Any bot can use any pad, enemies included.
 - \`state.arena\`: \`{ half_size }\`. The arena spans -half_size..half_size on both axes and bots cannot leave it. Up to four bots fight, each starting at the middle of a different edge.
-- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp }\`. \`walk_speed\` is in units per second.
+- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp, teleport_cooldown }\`. \`walk_speed\` is in units per second.
 
 The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the most hp wins.
 
