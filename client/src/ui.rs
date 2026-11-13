@@ -504,7 +504,7 @@ fn room_settings(ctx: &egui::Context, game: &Room, actions: &mut MessageWriter<A
                     ui.label(small("Match length"));
                     for secs in MATCH_LENGTHS {
                         let chosen = game.match_secs == secs;
-                        if ui.selectable_label(chosen, format!("{secs} s")).clicked() && !chosen {
+                        if ui.selectable_label(chosen, format!("{secs}s")).clicked() && !chosen {
                             actions.write(Action::SetRoomSettings {
                                 match_secs: secs,
                                 house_bot: game.house_bot,
@@ -585,7 +585,7 @@ fn roster(
             theme::bold(theme::SIZE_HEADING),
             theme::INK,
         ),
-        right(format!("{} s matches", game.match_secs), muted),
+        right(format!("{}s matches", game.match_secs), muted),
     )];
     for player in snapshot.players.iter().filter(|player| player.online) {
         let mut name = player.name.clone();
@@ -593,7 +593,7 @@ fn roster(
             name += " (you)";
         }
         if player.id == game.owner {
-            name += "  ·  owner";
+            name += "  ·  Owner";
         }
         let status = snapshot.submission_of(player.id).map(|s| s.status);
         let (state, color) = bot_state(game, replay, player.id, status);
@@ -681,19 +681,19 @@ fn bot_state(
     let down = in_match.is_some_and(|bot| bot.action == BotAction::Dead);
 
     match (game.phase, status) {
-        (Phase::Prompting, None) => ("writing a prompt", muted),
-        (Phase::Prompting, Some(SubmissionStatus::Generating)) => ("agent is building", muted),
-        (Phase::Prompting, Some(SubmissionStatus::Failed)) => ("agent failed", bad),
-        (Phase::Prompting, Some(SubmissionStatus::Ready)) => ("ready", good),
+        (Phase::Prompting, None) => ("Writing a Prompt", muted),
+        (Phase::Prompting, Some(SubmissionStatus::Generating)) => ("Agent Building", muted),
+        (Phase::Prompting, Some(SubmissionStatus::Failed)) => ("Agent Failed", bad),
+        (Phase::Prompting, Some(SubmissionStatus::Ready)) => ("Ready", good),
         // Joined while a match was already set up: no bot in it.
         (Phase::Countdown | Phase::Fighting | Phase::Results, _) if in_match.is_none() => {
-            ("watching", muted)
+            ("Watching", muted)
         }
-        (Phase::Countdown, _) => ("ready", good),
-        (Phase::Results, _) if game.winner == Some(id) => ("won", good),
-        (Phase::Fighting | Phase::Results, _) if down => ("knocked out", bad),
-        (Phase::Fighting, _) => ("fighting", theme::INK),
-        (Phase::Results, _) => ("still standing", muted),
+        (Phase::Countdown, _) => ("Ready", good),
+        (Phase::Results, _) if game.winner == Some(id) => ("Won", good),
+        (Phase::Fighting | Phase::Results, _) if down => ("Knocked Out", bad),
+        (Phase::Fighting, _) => ("Fighting", theme::INK),
+        (Phase::Results, _) => ("Still Standing", muted),
     }
 }
 
@@ -895,7 +895,7 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             if alive {
                 bot.hp.max(0).to_string()
             } else {
-                "out".into()
+                "Out".into()
             },
             egui::FontId::proportional(theme::SIZE_SMALL),
             theme::INK_MUTED,

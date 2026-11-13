@@ -59,6 +59,16 @@ pub fn color_grading() -> ColorGrading {
     }
 }
 
+/// The dagger each bot's floating hand holds.
+pub const DAGGER_BLADE: Color = Color::srgb(0.90, 0.91, 0.93);
+pub const DAGGER_HILT: Color = Color::srgb(0.30, 0.22, 0.16);
+
+/// A bot's body for a moment after it is hit.
+pub const HIT_FLASH: Color = Color::srgb(1.0, 0.55, 0.1);
+
+/// A dagger swing's trail: a warm white.
+pub const SLASH: Color = Color::srgb(1.0, 0.85, 0.65);
+
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.
@@ -93,6 +103,9 @@ pub const BAD: Color32 = Color32::from_rgb(0xcf, 0x3a, 0x2a);
 /// Error panels: a soft brick red, so it reads as a problem without shouting.
 pub const ERROR_FILL: Color32 = Color32::from_rgb(0xd2, 0x5c, 0x4d);
 pub const ERROR_TEXT: Color32 = Color32::WHITE;
+pub const ERROR_STROKE: Color32 = Color32::from_rgb(0x7a, 0x1e, 0x14);
+/// Text boxes: no outline, a light grey fill to set them off the panel.
+pub const FIELD_FILL: Color32 = Color32::from_rgb(0xf0, 0xee, 0xec);
 
 /// Panels (text boxes, pills, cards): white, with a bold warm-black outline
 /// and well rounded corners.
@@ -220,20 +233,21 @@ pub fn panel(painter: &egui::Painter, rect: egui::Rect) {
     );
 }
 
-/// A text box inside a panel: outlined like one, without its shadow.
+/// A text box inside a panel: light grey, no outline or shadow.
 pub fn field_frame() -> egui::Frame {
-    box_frame()
-        .shadow(egui::Shadow::NONE)
+    egui::Frame::new()
+        .fill(FIELD_FILL)
         .corner_radius(PILL_RADIUS)
         .inner_margin(egui::Margin::symmetric(12, 8))
 }
 
-/// A panel for something that went wrong: soft red, white text. Fill it
+/// A panel for something that went wrong: soft red, dark red outline,
+/// white text. Fill it
 /// with [`error_heading`] and [`error_body`].
 pub fn error_panel(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(ERROR_FILL)
-        .stroke(panel_stroke())
+        .stroke(egui::Stroke::new(PANEL_STROKE_WIDTH, ERROR_STROKE))
         .shadow(PANEL_SHADOW)
         .corner_radius(PILL_RADIUS)
         .inner_margin(egui::Margin::symmetric(16, 10))
