@@ -36,6 +36,8 @@ pub struct BotView {
     pub position: Vec3,
     pub radius: f32,
     pub hp: i32,
+    /// How much of its full stamina the bot has left, `0.0..=1.0`.
+    pub stamina: f32,
     pub action: BotAction,
 }
 
@@ -693,6 +695,17 @@ pub fn replay(
         return;
     };
     let blend = tick.fract();
+    // Everybody starts full, so the opening frame says how much that is.
+    let opening = conn
+        .db()
+        .match_frames()
+        .iter()
+        .find(|f| f.room_id == room.id && f.tick == 0);
+    // Stamina sits beside the bots, in the same order.
+    let stamina_of = |frame: &Frame, id: u32| {
+        let at = frame.bots.iter().position(|b| b.player_id == id)?;
+        frame.stamina.as_ref()?.get(at).copied()
+    };
 
     for bot in &from.bots {
         // The later frame decides hp/action so hits land when they are shown.
@@ -702,19 +715,25 @@ pub fn replay(
             .unwrap_or(bot);
         let x = bot.x + (next.x - bot.x) * blend;
         let y = bot.y + (next.y - bot.y) * blend;
+        let id = bot.player_id;
+        // Blended like the position, so the bar drains and fills smoothly.
+        let stamina = stamina_of(&from, id).zip(opening.as_ref().and_then(|f| stamina_of(f, id)));
+        let stamina = stamina.map_or(1.0, |(now, full)| {
+            let later = to.as_ref().and_then(|f| stamina_of(f, id)).unwrap_or(now);
+            let now = now as f32 + (later - now) as f32 * blend;
+            (now / full.max(1) as f32).clamp(0.0, 1.0)
+        });
         replay.bots.push(BotView {
-            max_hp: conn
-                .db()
-                .match_frames()
-                .iter()
-                .find(|f| f.room_id == room.id && f.tick == 0)
-                .and_then(|f| f.bots.into_iter().find(|b| b.player_id == bot.player_id))
+            max_hp: opening
+                .as_ref()
+                .and_then(|f| f.bots.iter().find(|b| b.player_id == id))
                 .map_or(room.max_hp, |b| b.hp),
             id: bot.player_id,
             // Sim (x, y) is the ground plane; Bevy's up axis is Y.
             position: Vec3::new(x, room.bot_radius, y),
             radius: room.bot_radius,
             hp: next.hp,
+            stamina,
             action: next.action,
         });
     }

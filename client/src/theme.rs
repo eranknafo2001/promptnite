@@ -126,6 +126,9 @@ pub const PILL_RADIUS: u8 = 14;
 
 pub const TEXT_SHADOW: Color32 = Color32::from_black_alpha(200);
 pub const HP_TRACK: Color32 = Color32::from_rgb(0xe8, 0xe2, 0xdc);
+/// The stamina bar's fill. Not a hue: the health bar above it is in the
+/// bot's own colour, and the palette uses them all.
+pub const STAMINA: Color32 = INK;
 
 /// Space between the window edge and anything placed along it.
 pub const EDGE: f32 = 12.0;

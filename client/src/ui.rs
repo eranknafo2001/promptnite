@@ -707,8 +707,8 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 ));
                 ui.add_space(10.0);
                 for line in [
-                    "Where it is, its hp, and how long until it can punch again",
-                    "Where every living enemy is, their hp and how far away they are",
+                    "Where it is, its hp and stamina, and how long until it can punch again",
+                    "Where every living enemy is, their hp, stamina and how far away they are",
                     "The arena's size, the time, and the rules: speed, punch range, damage",
                     "Anything it chose to remember from earlier in the match",
                 ] {
@@ -716,8 +716,9 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 }
                 ui.add_space(4.0);
                 ui.label(small(
-                    "It can walk, punch the nearest enemy in range, or wait: one per tick. \
-                     It can't see other prompts or when enemies can punch next.",
+                    "It can walk, dash, punch the nearest enemy in range, or wait: one per tick. \
+                     Dashes and punches cost stamina, which comes back on ticks it does \
+                     neither. It can't see other prompts or when enemies can punch next.",
                 ));
 
                 ui.add_space(14.0);
@@ -1080,7 +1081,8 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
 }
 
 /// One panel down the left side, vertically centred, with a row per bot in
-/// the match: colour dot, name and health, the health bar underneath.
+/// the match: colour dot, name and health, the health bar underneath and the
+/// stamina bar under that.
 ///
 /// Painted directly, like the roster, so the panel doesn't jump a frame when
 /// a name changes length.
@@ -1092,11 +1094,13 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
     const WIDTH: f32 = 350.0;
     const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
     const HEADING: f32 = 30.0;
-    const ROW: f32 = 78.0;
+    const ROW: f32 = 86.0;
     /// The last row ends at its bar, not at the next row.
-    const LAST_ROW: f32 = 66.0;
+    const LAST_ROW: f32 = 74.0;
     const DOT: f32 = 10.0;
     const BAR: f32 = 6.0;
+    /// The stamina bar, right under the health bar and thinner.
+    const STAMINA_BAR: f32 = 4.0;
 
     if replay.bots.is_empty() {
         return;
@@ -1155,6 +1159,18 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
             painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
         }
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), top + 32.0),
+            egui::vec2(inner.width(), STAMINA_BAR),
+        );
+        painter.rect_filled(bar, STAMINA_BAR / 2.0, theme::HP_TRACK);
+        if alive && bot.stamina > 0.0 {
+            let filled = egui::Rect::from_min_size(
+                bar.min,
+                egui::vec2(bar.width() * bot.stamina, STAMINA_BAR),
+            );
+            painter.rect_filled(filled, STAMINA_BAR / 2.0, theme::STAMINA);
+        }
         let points = snapshot
             .submission_of(bot.id)
             .and_then(|s| s.build.as_deref());
@@ -1165,7 +1181,7 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
         {
             stat_strip(
                 painter,
-                egui::pos2(inner.left(), top + 50.0),
+                egui::pos2(inner.left(), top + 58.0),
                 inner.width(),
                 points,
                 ink,

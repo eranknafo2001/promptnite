@@ -296,6 +296,9 @@ pub enum BotAction {
     /// Swung at nothing.
     Miss,
     Dead,
+    // New kinds go last: the hosted database only takes an enum that grew at
+    // its end without a manual migration.
+    Dash,
 }
 
 #[derive(SpacetimeType, Clone, Debug)]
@@ -320,6 +323,12 @@ pub struct Frame {
     room_id: u32,
     tick: u32,
     bots: Vec<BotFrame>,
+    /// Each bot's stamina, in the order of `bots`. A column of its own with a
+    /// default, because a field added to `BotFrame` would change the type of
+    /// `bots`, which needs a manual migration. `None` only in rows written
+    /// before the column existed.
+    #[default(None)]
+    stamina: Option<Vec<i32>>,
 }
 
 /// Room in the high half, tick in the low half.
@@ -1055,9 +1064,11 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
                         sim::ActionKind::Attack => BotAction::Attack,
                         sim::ActionKind::Miss => BotAction::Miss,
                         sim::ActionKind::Dead => BotAction::Dead,
+                        sim::ActionKind::Dash => BotAction::Dash,
                     },
                 })
                 .collect(),
+            stamina: Some(frame.bots.iter().map(|bot| bot.stamina).collect()),
         });
     }
     let faults = outcome.faults.len();

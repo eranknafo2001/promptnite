@@ -13,6 +13,7 @@ pub struct Frame {
     pub room_id: u32,
     pub tick: u32,
     pub bots: Vec<BotFrame>,
+    pub stamina: Option<Vec<i32>>,
 }
 
 impl __sdk::InModule for Frame {
@@ -27,6 +28,7 @@ pub struct FrameCols {
     pub room_id: __sdk::__query_builder::Col<Frame, u32>,
     pub tick: __sdk::__query_builder::Col<Frame, u32>,
     pub bots: __sdk::__query_builder::Col<Frame, Vec<BotFrame>>,
+    pub stamina: __sdk::__query_builder::Col<Frame, Option<Vec<i32>>>,
 }
 
 impl __sdk::__query_builder::HasCols for Frame {
@@ -37,6 +39,7 @@ impl __sdk::__query_builder::HasCols for Frame {
             room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             tick: __sdk::__query_builder::Col::new(table_name, "tick"),
             bots: __sdk::__query_builder::Col::new(table_name, "bots"),
+            stamina: __sdk::__query_builder::Col::new(table_name, "stamina"),
         }
     }
 }
