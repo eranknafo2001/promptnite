@@ -950,7 +950,7 @@ fn bot_markers(
         .iter()
         .filter(|bot| bot.action != BotAction::Dead)
     {
-        let above = bot.position + Vec3::Y * (bot.radius * 2.2);
+        let above = bot.position + Vec3::Y * (bot.radius * 2.8);
         // The arena camera covers the whole window, so its viewport
         // coordinates are egui coordinates.
         let Ok(tip) = camera.world_to_viewport(camera_transform, above) else {

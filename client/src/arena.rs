@@ -4,7 +4,13 @@
 //! tick. Here we work out which tick should be on screen right now, blend the
 //! two neighbouring frames and move one sphere per bot accordingly.
 
-use bevy::prelude::*;
+use bevy::{
+    mesh::{
+        VertexAttributeValues,
+        skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
+    },
+    prelude::*,
+};
 use promptnite_bindings::{sdk::Table, *};
 
 use crate::{
@@ -109,6 +115,27 @@ pub struct BotAssets {
     blade: (Handle<Mesh>, Handle<StandardMaterial>),
     slash: Handle<Mesh>,
     hilt: (Handle<Mesh>, Handle<StandardMaterial>),
+    stem: Handle<Mesh>,
+    stem_material: Handle<StandardMaterial>,
+    stem_bindposes: Handle<SkinnedMeshInverseBindposes>,
+    ball: Handle<Mesh>,
+}
+
+/// The antenna on a bot's head: a thin stem skinned to a chain of bones and
+/// a ball riding the last one. Sizes are in bot radii (the bot is scaled).
+const STEM_BASE: f32 = 0.95;
+const STEM_LENGTH: f32 = 0.9;
+const STEM_RADIUS: f32 = 0.035;
+const STEM_BONES: usize = 4;
+const BALL_RADIUS: f32 = 0.16;
+
+/// The ball's spring: where it is and how fast it moves, in world space.
+#[derive(Component)]
+pub struct Antenna {
+    tip: Vec3,
+    velocity: Vec3,
+    /// The bones that bend, root first.
+    bones: Vec<Entity>,
 }
 
 /// A live bot's floating hand: a pivot at the bot's centre, turned so the
@@ -134,7 +161,7 @@ pub fn plugin(app: &mut App) {
             Update,
             (
                 point_of_view,
-                (replay, sync_bots, swing_hands, fade_slashes).chain(),
+                (replay, sync_bots, swing_hands, fade_slashes, jiggle).chain(),
             ),
         );
 }
@@ -376,6 +403,7 @@ fn setup(
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     spawn_rooftop(&mut commands, &assets);
     spawn_building(&mut commands, &mut meshes, &mut materials);
@@ -423,7 +451,121 @@ fn setup(
             meshes.add(Cuboid::new(0.7, 0.14, 0.14)),
             materials.add(theme::DAGGER_HILT),
         ),
+        stem: meshes.add(stem_mesh()),
+        stem_material: materials.add(Color::srgb(0.55, 0.56, 0.6)),
+        // Bone k's rest pose sits k segments up the stem.
+        stem_bindposes: bindposes.add(
+            (0..=STEM_BONES)
+                .map(|k| Mat4::from_translation(-Vec3::Y * (STEM_BASE + k as f32 * SEGMENT)))
+                .collect::<Vec<_>>(),
+        ),
+        ball: meshes.add(Sphere::new(BALL_RADIUS)),
     });
+}
+
+const SEGMENT: f32 = STEM_LENGTH / STEM_BONES as f32;
+
+/// A cylinder standing on top of a unit sphere, one ring per bone, each ring
+/// skinned wholly to the bone that starts there.
+fn stem_mesh() -> Mesh {
+    let mut mesh = Cylinder::new(STEM_RADIUS, STEM_LENGTH)
+        .mesh()
+        .resolution(8)
+        .segments(STEM_BONES as u32)
+        .build()
+        .translated_by(Vec3::Y * (STEM_BASE + STEM_LENGTH / 2.0));
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        unreachable!("primitive meshes have float3 positions");
+    };
+    let joints: Vec<[u16; 4]> = positions
+        .iter()
+        .map(|p| [((p[1] - STEM_BASE) / SEGMENT).round() as u16, 0, 0, 0])
+        .collect();
+    let weights = vec![[1.0, 0.0, 0.0, 0.0]; joints.len()];
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_JOINT_INDEX,
+        VertexAttributeValues::Uint16x4(joints),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
+    mesh
+}
+
+/// Give the bot `bot` (at `transform`, coloured `material`) its antenna.
+fn spawn_antenna(
+    commands: &mut Commands,
+    assets: &BotAssets,
+    bot: Entity,
+    material: Handle<StandardMaterial>,
+    transform: Transform,
+) {
+    let mut parent = bot;
+    let mut joints = Vec::new();
+    for k in 0..=STEM_BONES {
+        let y = if k == 0 { STEM_BASE } else { SEGMENT };
+        parent = commands
+            .spawn((
+                Transform::from_xyz(0.0, y, 0.0),
+                Visibility::default(),
+                ChildOf(parent),
+            ))
+            .id();
+        joints.push(parent);
+    }
+    commands.spawn((
+        Mesh3d(assets.ball.clone()),
+        MeshMaterial3d(material),
+        Transform::from_xyz(0.0, BALL_RADIUS * 0.6, 0.0),
+        ChildOf(parent),
+    ));
+    commands.spawn((
+        Mesh3d(assets.stem.clone()),
+        MeshMaterial3d(assets.stem_material.clone()),
+        SkinnedMesh {
+            inverse_bindposes: assets.stem_bindposes.clone(),
+            joints: joints.clone(),
+        },
+        ChildOf(bot),
+    ));
+    joints.pop(); // the tip bone only carries the ball
+    commands.entity(bot).insert(Antenna {
+        tip: transform.transform_point(Vec3::Y * (STEM_BASE + STEM_LENGTH)),
+        velocity: Vec3::ZERO,
+        bones: joints,
+    });
+}
+
+/// The ball lags behind when the bot moves or puffs up and springs back,
+/// overshooting; the stem bends along its bones to follow it.
+fn jiggle(
+    time: Res<Time>,
+    mut bots: Query<(&Transform, &mut Antenna)>,
+    mut bones: Query<&mut Transform, Without<Antenna>>,
+) {
+    const STIFFNESS: f32 = 150.0;
+    const DAMPING: f32 = 5.0;
+    const MAX_BEND: f32 = 1.2; // radians
+    let dt = time.delta_secs().min(1.0 / 30.0);
+    for (bot, mut antenna) in &mut bots {
+        let base = bot.transform_point(Vec3::Y * STEM_BASE);
+        let length = STEM_LENGTH * bot.scale.y;
+        let rest = base + bot.rotation * Vec3::Y * length;
+        let pull = STIFFNESS * (rest - antenna.tip) - DAMPING * antenna.velocity;
+        antenna.velocity += pull * dt;
+        let tip = antenna.tip + antenna.velocity * dt;
+        // The stem doesn't stretch: the ball swings around its base.
+        let lean = (tip - base).normalize_or(Vec3::Y);
+        antenna.tip = base + lean * length;
+        let (axis, angle) =
+            Quat::from_rotation_arc(Vec3::Y, bot.rotation.inverse() * lean).to_axis_angle();
+        let per_bone = Quat::from_axis_angle(axis, angle.min(MAX_BEND) / STEM_BONES as f32);
+        for &bone in &antenna.bones {
+            if let Ok(mut bone) = bones.get_mut(bone) {
+                bone.rotation = per_bone;
+            }
+        }
+    }
 }
 
 /// Everybody watches the arena from behind the edge their own bot starts at:
@@ -620,61 +762,64 @@ pub fn sync_bots(
             // Its own copy of the body's material, for the hit flash.
             let body = materials.get(&material).cloned().unwrap_or_default();
             let body = materials.add(body);
-            commands.spawn((
-                bot,
-                Mesh3d(assets.mesh.clone()),
-                MeshMaterial3d(body),
-                transform,
-                children![
-                    (
-                        Nose(id),
-                        Transform::default(),
-                        Visibility::default(),
-                        children![(
-                            Mesh3d(assets.mesh.clone()),
-                            MeshMaterial3d(material.clone()),
-                            Transform::from_xyz(0.0, NOSE_LIFT, -NOSE_REACH)
-                                .with_scale(Vec3::splat(NOSE_SIZE)),
-                        )],
-                    ),
-                    (
-                        Hand {
-                            id,
-                            side: 1.0,
-                            swung_at: f32::NEG_INFINITY,
-                            swinging: false,
-                            facing: Vec3::NEG_Z,
-                        },
-                        Transform::default(),
-                        Visibility::default(),
-                        children![(
-                            Mesh3d(assets.mesh.clone()),
-                            MeshMaterial3d(material),
-                            Transform::from_xyz(0.0, 0.0, -HAND_REACH)
-                                .with_scale(Vec3::splat(HAND_SIZE)),
-                            children![
-                                // Hand radii along z; the meshes themselves in bot radii.
-                                (
-                                    Mesh3d(assets.blade.0.clone()),
-                                    MeshMaterial3d(assets.blade.1.clone()),
-                                    Transform::from_xyz(
-                                        0.0,
-                                        0.0,
-                                        -0.6 - BLADE_LENGTH / HAND_SIZE / 2.0
-                                    )
-                                    .with_scale(Vec3::splat(1.0 / HAND_SIZE)),
-                                ),
-                                (
-                                    Mesh3d(assets.hilt.0.clone()),
-                                    MeshMaterial3d(assets.hilt.1.clone()),
-                                    Transform::from_xyz(0.0, 0.0, -1.0)
+            let bot = commands
+                .spawn((
+                    bot,
+                    Mesh3d(assets.mesh.clone()),
+                    MeshMaterial3d(body),
+                    transform,
+                    children![
+                        (
+                            Nose(id),
+                            Transform::default(),
+                            Visibility::default(),
+                            children![(
+                                Mesh3d(assets.mesh.clone()),
+                                MeshMaterial3d(material.clone()),
+                                Transform::from_xyz(0.0, NOSE_LIFT, -NOSE_REACH)
+                                    .with_scale(Vec3::splat(NOSE_SIZE)),
+                            )],
+                        ),
+                        (
+                            Hand {
+                                id,
+                                side: 1.0,
+                                swung_at: f32::NEG_INFINITY,
+                                swinging: false,
+                                facing: Vec3::NEG_Z,
+                            },
+                            Transform::default(),
+                            Visibility::default(),
+                            children![(
+                                Mesh3d(assets.mesh.clone()),
+                                MeshMaterial3d(material.clone()),
+                                Transform::from_xyz(0.0, 0.0, -HAND_REACH)
+                                    .with_scale(Vec3::splat(HAND_SIZE)),
+                                children![
+                                    // Hand radii along z; the meshes themselves in bot radii.
+                                    (
+                                        Mesh3d(assets.blade.0.clone()),
+                                        MeshMaterial3d(assets.blade.1.clone()),
+                                        Transform::from_xyz(
+                                            0.0,
+                                            0.0,
+                                            -0.6 - BLADE_LENGTH / HAND_SIZE / 2.0
+                                        )
                                         .with_scale(Vec3::splat(1.0 / HAND_SIZE)),
-                                ),
-                            ],
-                        )],
-                    )
-                ],
-            ));
+                                    ),
+                                    (
+                                        Mesh3d(assets.hilt.0.clone()),
+                                        MeshMaterial3d(assets.hilt.1.clone()),
+                                        Transform::from_xyz(0.0, 0.0, -1.0)
+                                            .with_scale(Vec3::splat(1.0 / HAND_SIZE)),
+                                    ),
+                                ],
+                            )],
+                        )
+                    ],
+                ))
+                .id();
+            spawn_antenna(&mut commands, &assets, bot, material, transform);
         }
     }
 }
