@@ -704,7 +704,7 @@ fn prompt_box(
                             }
                         });
                 });
-                if dice_button(ui, field_box.response.rect) {
+                if dice_button(ui, field_box.response.rect, form.touch) {
                     let seed = (ui.input(|input| input.time) * 1000.0) as u32;
                     let mut pick = (crate::fx::rand(seed) * EXAMPLE_PROMPTS.len() as f32) as usize
                         % EXAMPLE_PROMPTS.len();
@@ -771,11 +771,16 @@ const EXAMPLE_PROMPTS: [&str; 5] = [
 /// A round button with a die on it, in the bottom right corner of `field`,
 /// styled like the help button. It goes in a child ui so it floats over the
 /// text without taking space from it. True when clicked.
-fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
-    const SIZE: f32 = 24.0;
+fn dice_button(ui: &mut egui::Ui, field: egui::Rect, touch: bool) -> bool {
+    // Finger-sized on a phone, unless the keyboard has squeezed the field.
+    let size = if touch && field.height() >= 90.0 {
+        36.0
+    } else {
+        24.0
+    };
     let rect = egui::Rect::from_min_size(
-        field.right_bottom() - egui::Vec2::splat(SIZE + 8.0),
-        egui::Vec2::splat(SIZE),
+        field.right_bottom() - egui::Vec2::splat(size + 8.0),
+        egui::Vec2::splat(size),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     // A shade darker than the help button, so it shows on the grey field.
@@ -797,7 +802,7 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
         .add(
             egui::Button::new("")
                 .corner_radius(theme::PILL_RADIUS)
-                .min_size(egui::Vec2::splat(SIZE)),
+                .min_size(egui::Vec2::splat(size)),
         )
         .on_hover_text("Roll a random prompt");
     // The same colour the "?" gets.
