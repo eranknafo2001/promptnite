@@ -28,4 +28,19 @@ serde_json = "1"
 
 [target.wasm32-unknown-unknown.dependencies]
 bevy_stdb = { version = "0.14", features = ["browser"] }
-web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "UrlSearchParams", "Navigator", "Document", "Element"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Storage",
+    "Location",
+    "UrlSearchParams",
+    "Navigator",
+    "Document",
+    "Element",
+    # Copy and paste, see src/clipboard.rs.
+    "Clipboard",
+    "ClipboardEvent",
+    "DataTransfer",
+    "Event",
+    "EventTarget",
+    "KeyboardEvent",
+] }
