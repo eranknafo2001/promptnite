@@ -466,7 +466,7 @@ fn prompt_box(
                 let footer_height = 28.0;
                 let text_height =
                     ui.available_height() - footer_height - ui.spacing().item_spacing.y;
-                theme::field_frame().show(ui, |ui| {
+                let field_box = theme::field_frame().show(ui, |ui| {
                     let text_height = text_height - 16.0;
                     egui::ScrollArea::vertical()
                         .max_height(text_height)
@@ -490,6 +490,16 @@ fn prompt_box(
                             }
                         });
                 });
+                if dice_button(ui, field_box.response.rect) {
+                    let seed = (ui.input(|input| input.time) * 1000.0) as u32;
+                    let mut pick = (crate::fx::rand(seed) * EXAMPLE_PROMPTS.len() as f32) as usize
+                        % EXAMPLE_PROMPTS.len();
+                    // Never roll the prompt that is already there.
+                    if form.prompt == EXAMPLE_PROMPTS[pick] {
+                        pick = (pick + 1) % EXAMPLE_PROMPTS.len();
+                    }
+                    form.prompt = EXAMPLE_PROMPTS[pick].to_string();
+                }
 
                 let mut clicked = false;
                 ui.allocate_ui_with_layout(
@@ -519,6 +529,75 @@ fn prompt_box(
                 }
             });
         });
+}
+
+/// What the dice in the prompt box fills it with.
+const EXAMPLE_PROMPTS: [&str; 5] = [
+    "Walk to the enemy with the lowest hp and punch it whenever your cooldown is ready. \
+     When it dies, pick the next lowest.",
+    "Hit and run: walk in and punch the nearest enemy, then back straight away from it \
+     until your cooldown is ready again.",
+    "Stay in a corner and wait. Punch any enemy that comes within range. \
+     In the last 10 seconds, chase whoever has the least hp.",
+    "Keep away from every enemy until only one is left or 20 seconds have passed, \
+     then go after the closest one and punch nonstop.",
+    "Punch the nearest enemy while your hp is above 40. Below 40, run to the far side \
+     of the arena from the closest enemy and only fight back if it catches you.",
+];
+
+/// A round button with a die on it, in the bottom right corner of `field`,
+/// styled like the help button. It goes in a child ui so it floats over the
+/// text without taking space from it. True when clicked.
+fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
+    const SIZE: f32 = 24.0;
+    let rect = egui::Rect::from_min_size(
+        field.right_bottom() - egui::Vec2::splat(SIZE + 8.0),
+        egui::Vec2::splat(SIZE),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    // A shade darker than the help button, so it shows on the grey field.
+    let widgets = &mut child.visuals_mut().widgets;
+    for state in [
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+    ] {
+        let [r, g, b, a] = state.weak_bg_fill.to_array();
+        state.weak_bg_fill = egui::Color32::from_rgba_premultiplied(
+            r.saturating_sub(40),
+            g.saturating_sub(40),
+            b.saturating_sub(40),
+            a,
+        );
+    }
+    let response = child
+        .add(
+            egui::Button::new("")
+                .corner_radius(theme::PILL_RADIUS)
+                .min_size(egui::Vec2::splat(SIZE)),
+        )
+        .on_hover_text("Roll a random prompt");
+    // The same colour the "?" gets.
+    let ink = ui.visuals().widgets.style(&response).text_color();
+    let centre = response.rect.center();
+    let painter = ui.painter();
+    painter.rect_stroke(
+        egui::Rect::from_center_size(centre, egui::Vec2::splat(12.0)),
+        2.5,
+        egui::Stroke::new(1.5, ink),
+        egui::StrokeKind::Middle,
+    );
+    // The five face.
+    for (x, y) in [
+        (-1.0, -1.0),
+        (1.0, -1.0),
+        (0.0, 0.0),
+        (-1.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        painter.circle_filled(centre + egui::vec2(x, y) * 3.0, 1.2, ink);
+    }
+    response.clicked()
 }
 
 /// The room's settings, top left. Only the owner gets them, and only while
