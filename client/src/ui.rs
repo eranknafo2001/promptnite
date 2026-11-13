@@ -626,7 +626,7 @@ fn prompt_box(
                             egui::RichText::new("?").font(theme::bold(theme::SIZE_BODY)),
                         )
                         .corner_radius(theme::PILL_RADIUS)
-                        .min_size(egui::vec2(24.0, 24.0));
+                        .min_size(egui::Vec2::splat(if form.touch { 36.0 } else { 24.0 }));
                         if ui
                             .add(button)
                             .on_hover_text("What your bot knows")
@@ -936,50 +936,22 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
             ui.multiply_opacity(alpha);
             box_frame().show(ui, |ui| {
                 ui.set_width(WIDTH.min(screen.width() - 4.0 * EDGE));
-                ui.label(theme::heading("What your bot knows"));
-                ui.add_space(4.0);
-                ui.label(small(
-                    "Your agent turns your prompt into a script. Ten times a second, \
-                     the script looks at the arena and picks one move.",
-                ));
-                ui.add_space(10.0);
-                for line in [
-                    "Where it is, its hp and stamina, and how long until it can punch again",
-                    "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
-                    "Where the numbered teleporters are and where each one leads",
-                    "The arena's size, the time, and the rules: speed, punch range, damage",
-                    "Anything it chose to remember from earlier in the match",
-                ] {
-                    bullet(ui, line);
-                }
-                ui.add_space(4.0);
-                ui.label(small(
-                    "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
-                     wait: one per tick. Dashes, punches and the shield cost stamina, which \
-                     comes back on ticks it does none of them. A shield stops every hit but \
-                     slows the bot to half speed. A teleporter takes any bot that gets onto \
-                     it to the next number, and the last one back to 1. It can't see other prompts or when enemies can punch next.",
-                ));
-
-                ui.add_space(14.0);
-                ui.label(theme::heading("Writing a good prompt"));
-                ui.add_space(4.0);
-                for line in [
-                    "Choose a build: health, speed, damage, reach, or faster punches",
-                    "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
-                    "Say who to go after when there's more than one enemy",
-                    "At the time limit the most hp wins, so plan for the clock",
-                    "A short, clear plan beats a clever, vague one",
-                ] {
-                    bullet(ui, line);
-                }
+                // On a short screen the text scrolls and the button stays put.
+                egui::ScrollArea::vertical()
+                    .max_height((screen.height() - 150.0).max(120.0))
+                    .show(ui, help_text);
 
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let got_it = egui::Button::new(
-                        egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)),
-                    );
-                    if ui.add(got_it).clicked() {
+                    let clicked = if form.touch {
+                        let size = egui::vec2(96.0, TOUCH_BUTTON);
+                        ui.add_sized(size, theme::button("Got it", theme::SIZE_BODY, true))
+                            .clicked()
+                    } else {
+                        ui.button(egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)))
+                            .clicked()
+                    };
+                    if clicked {
                         form.help = false;
                     }
                 });
@@ -997,6 +969,47 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
     // Hand the keyboard back to the prompt once the help goes away.
     if !form.help {
         form.focused = None;
+    }
+}
+
+fn help_text(ui: &mut egui::Ui) {
+    ui.label(theme::heading("What your bot knows"));
+    ui.add_space(4.0);
+    ui.label(small(
+        "Your agent turns your prompt into a script. Ten times a second, \
+                     the script looks at the arena and picks one move.",
+    ));
+    ui.add_space(10.0);
+    for line in [
+        "Where it is, its hp and stamina, and how long until it can punch again",
+        "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
+        "Where the numbered teleporters are and where each one leads",
+        "The arena's size, the time, and the rules: speed, punch range, damage",
+        "Anything it chose to remember from earlier in the match",
+    ] {
+        bullet(ui, line);
+    }
+    ui.add_space(4.0);
+    ui.label(small(
+        "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
+         wait: one per tick. Dashes, punches and the shield cost stamina, which \
+         comes back on ticks it does none of them. A shield stops every hit but \
+         slows the bot to half speed. A teleporter takes any bot that gets onto \
+         it to the next number, and the last one back to 1. It can't see other \
+         prompts or when enemies can punch next.",
+    ));
+
+    ui.add_space(14.0);
+    ui.label(theme::heading("Writing a good prompt"));
+    ui.add_space(4.0);
+    for line in [
+        "Choose a build: health, speed, damage, reach, or faster punches",
+        "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
+        "Say who to go after when there's more than one enemy",
+        "At the time limit the most hp wins, so plan for the clock",
+        "A short, clear plan beats a clever, vague one",
+    ] {
+        bullet(ui, line);
     }
 }
 
