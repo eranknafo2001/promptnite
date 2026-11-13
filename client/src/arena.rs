@@ -129,11 +129,14 @@ const STEM_RADIUS: f32 = 0.035;
 const STEM_BONES: usize = 4;
 const BALL_RADIUS: f32 = 0.16;
 
-/// The ball's spring: where it is and how fast it moves, in world space.
+/// The ball's spring: where it is and how fast it moves, in world space,
+/// and the stem's base last frame, to feel the bot speed up and slow down.
 #[derive(Component)]
 pub struct Antenna {
     tip: Vec3,
     velocity: Vec3,
+    base: Vec3,
+    base_velocity: Vec3,
     /// The bones that bend, root first.
     bones: Vec<Entity>,
 }
@@ -161,7 +164,7 @@ pub fn plugin(app: &mut App) {
             Update,
             (
                 point_of_view,
-                (replay, sync_bots, swing_hands, fade_slashes, jiggle).chain(),
+                (replay, sync_bots, swing_hands, fade_slashes, lunge, jiggle).chain(),
             ),
         );
 }
@@ -532,31 +535,51 @@ fn spawn_antenna(
     commands.entity(bot).insert(Antenna {
         tip: transform.transform_point(Vec3::Y * (STEM_BASE + STEM_LENGTH)),
         velocity: Vec3::ZERO,
+        base: transform.transform_point(Vec3::Y * STEM_BASE),
+        base_velocity: Vec3::ZERO,
         bones: joints,
     });
 }
 
-/// The ball lags behind when the bot moves or puffs up and springs back,
-/// overshooting; the stem bends along its bones to follow it.
+/// A stiff, barely damped spring, like a doorstop's: it rings fast and long
+/// rather than swaying. Being stiff it would hardly lean, so every change in
+/// the bot's speed kicks the ball harder than real inertia would.
 fn jiggle(
     time: Res<Time>,
     mut bots: Query<(&Transform, &mut Antenna)>,
     mut bones: Query<&mut Transform, Without<Antenna>>,
 ) {
-    const STIFFNESS: f32 = 150.0;
-    const DAMPING: f32 = 5.0;
+    const STIFFNESS: f32 = 700.0; // ~4 Hz
+    const DAMPING: f32 = 4.0; // ~0.08 of critical
+    const KICK: f32 = 3.0;
     const MAX_BEND: f32 = 1.2; // radians
-    let dt = time.delta_secs().min(1.0 / 30.0);
+    // A stiff spring needs small steps to stay stable.
+    const STEPS: u32 = 4;
+    let frame = time.delta_secs().min(1.0 / 30.0);
+    if frame <= 0.0 {
+        return;
+    }
+    let dt = frame / STEPS as f32;
     for (bot, mut antenna) in &mut bots {
         let base = bot.transform_point(Vec3::Y * STEM_BASE);
+        let base_velocity = (base - antenna.base) / frame;
+        // Real inertia is the tip staying put while the base moves; this adds
+        // the extra.
+        let kick = (KICK - 1.0) * (base_velocity - antenna.base_velocity);
+        antenna.velocity -= kick;
+        antenna.base = base;
+        antenna.base_velocity = base_velocity;
+
         let length = STEM_LENGTH * bot.scale.y;
         let rest = base + bot.rotation * Vec3::Y * length;
-        let pull = STIFFNESS * (rest - antenna.tip) - DAMPING * antenna.velocity;
-        antenna.velocity += pull * dt;
-        let tip = antenna.tip + antenna.velocity * dt;
-        // The stem doesn't stretch: the ball swings around its base.
-        let lean = (tip - base).normalize_or(Vec3::Y);
-        antenna.tip = base + lean * length;
+        for _ in 0..STEPS {
+            let pull = STIFFNESS * (rest - antenna.tip) - DAMPING * antenna.velocity;
+            antenna.velocity += pull * dt;
+            let tip = antenna.tip + antenna.velocity * dt;
+            // The stem doesn't stretch: the ball swings around its base.
+            antenna.tip = base + (tip - base).normalize_or(Vec3::Y) * length;
+        }
+        let lean = (antenna.tip - base).normalize_or(Vec3::Y);
         let (axis, angle) =
             Quat::from_rotation_arc(Vec3::Y, bot.rotation.inverse() * lean).to_axis_angle();
         let per_bone = Quat::from_axis_angle(axis, angle.min(MAX_BEND) / STEM_BONES as f32);
@@ -863,12 +886,35 @@ const BLADE_LENGTH: f32 = 0.9;
 /// How far round from straight ahead the hand rests, either side.
 const HAND_REST: f32 = 1.1;
 const SWING_SECS: f32 = 0.18;
+/// Each swing jolts the body forwards and back, in bot radii and seconds.
+/// Only on screen: the replayed position is left alone.
+const LUNGE: f32 = 0.3;
+const LUNGE_SECS: f32 = 0.25;
 
 /// Noses and trails, which turn with the hands.
 type Turning = (
     AnyOf<(&'static Nose, &'static Slash)>,
     &'static mut Transform,
 );
+
+/// Jolt each swinging bot's body towards where it faces: out fast, peaking a
+/// quarter of the way in, then eased back.
+fn lunge(
+    time: Res<Time>,
+    hands: Query<(&Hand, &ChildOf)>,
+    mut bodies: Query<&mut Transform, With<Bot>>,
+) {
+    let now = time.elapsed_secs();
+    for (hand, body) in &hands {
+        let t = ((now - hand.swung_at) / LUNGE_SECS).clamp(0.0, 1.0);
+        let lunge = 9.48 * t * (1.0 - t).powi(3);
+        if let Ok(mut body) = bodies.get_mut(body.parent()) {
+            // The body is scaled to its radius.
+            let reach = LUNGE * body.scale.x * lunge;
+            body.translation += hand.facing * reach;
+        }
+    }
+}
 
 /// Face the nearest living enemy; on every swing (an attack tick, hit or
 /// miss) sweep the hand across the front to the other side.
