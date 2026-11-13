@@ -236,18 +236,10 @@ mod web {
         let Ok(context) = context.single() else {
             return;
         };
-        // bevy_egui still listens for the events; only pastes carry anything.
-        while let Some(event) = clipboard.try_receive_clipboard_event() {
-            if let WebClipboardEvent::Paste(text) = event {
-                events.write(EguiInputEvent {
-                    context,
-                    event: egui::Event::Paste(text),
-                });
-            }
-        }
         // The text is on the clipboard already. Telling egui to cut would
         // have it copy the text again, too late to be allowed; backspace
-        // deletes the selection just the same.
+        // deletes the selection just the same. Before any paste: a cut and a
+        // paste within one frame are a cut followed by a paste.
         if CUT.take() {
             for pressed in [true, false] {
                 events.write(EguiInputEvent {
@@ -259,6 +251,15 @@ mod web {
                         repeat: false,
                         modifiers: egui::Modifiers::NONE,
                     },
+                });
+            }
+        }
+        // bevy_egui still listens for the events; only pastes carry anything.
+        while let Some(event) = clipboard.try_receive_clipboard_event() {
+            if let WebClipboardEvent::Paste(text) = event {
+                events.write(EguiInputEvent {
+                    context,
+                    event: egui::Event::Paste(text),
                 });
             }
         }
