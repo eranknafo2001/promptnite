@@ -9,13 +9,13 @@ use super::submission_status_type::SubmissionStatus;
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub struct Submission {
-    pub build: Vec<u32>,
-    pub max_hp: i32,
     pub player_id: u32,
     pub room_id: u32,
     pub round: u32,
     pub status: SubmissionStatus,
     pub error: String,
+    pub build: Option<Vec<u32>>,
+    pub max_hp: i32,
 }
 
 impl __sdk::InModule for Submission {
@@ -26,26 +26,26 @@ impl __sdk::InModule for Submission {
 ///
 /// Provides typed access to columns for query building.
 pub struct SubmissionCols {
-    pub build: __sdk::__query_builder::Col<Submission, Vec<u32>>,
-    pub max_hp: __sdk::__query_builder::Col<Submission, i32>,
     pub player_id: __sdk::__query_builder::Col<Submission, u32>,
     pub room_id: __sdk::__query_builder::Col<Submission, u32>,
     pub round: __sdk::__query_builder::Col<Submission, u32>,
     pub status: __sdk::__query_builder::Col<Submission, SubmissionStatus>,
     pub error: __sdk::__query_builder::Col<Submission, String>,
+    pub build: __sdk::__query_builder::Col<Submission, Option<Vec<u32>>>,
+    pub max_hp: __sdk::__query_builder::Col<Submission, i32>,
 }
 
 impl __sdk::__query_builder::HasCols for Submission {
     type Cols = SubmissionCols;
     fn cols(table_name: &'static str) -> Self::Cols {
         SubmissionCols {
-            build: __sdk::__query_builder::Col::new(table_name, "build"),
-            max_hp: __sdk::__query_builder::Col::new(table_name, "max_hp"),
             player_id: __sdk::__query_builder::Col::new(table_name, "player_id"),
             room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             round: __sdk::__query_builder::Col::new(table_name, "round"),
             status: __sdk::__query_builder::Col::new(table_name, "status"),
             error: __sdk::__query_builder::Col::new(table_name, "error"),
+            build: __sdk::__query_builder::Col::new(table_name, "build"),
+            max_hp: __sdk::__query_builder::Col::new(table_name, "max_hp"),
         }
     }
 }

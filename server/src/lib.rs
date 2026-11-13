@@ -206,9 +206,6 @@ pub enum SubmissionStatus {
 /// `bot_script`. Private; a room's rows are served by `room_submissions`.
 #[table(accessor = submission)]
 pub struct Submission {
-    /// Validated allocation, ordered health, speed, power, reach, recovery.
-    build: Vec<u32>,
-    max_hp: i32,
     #[primary_key]
     player_id: u32,
     #[index(btree)]
@@ -217,6 +214,15 @@ pub struct Submission {
     status: SubmissionStatus,
     /// Why it failed, empty otherwise.
     error: String,
+    // Keep new columns at the end with migration defaults so existing rows
+    // and the player_id primary key retain their column positions.
+    /// Validated allocation, ordered health, speed, power, reach, recovery.
+    /// None for legacy, pending, or hidden builds. SpacetimeDB 2.15 cannot
+    /// const-check a Vec default, but supports an optional Vec default of None.
+    #[default(None)]
+    build: Option<Vec<u32>>,
+    #[default(rules::MAX_HP)]
+    max_hp: i32,
 }
 
 /// A player's prompt and the Lua their agent wrote. Private, and on purpose
@@ -615,7 +621,7 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         room_id: room.id,
         round: room.round,
         status: SubmissionStatus::Generating,
-        build: Vec::new(),
+        build: None,
         max_hp: rules::MAX_HP,
         error: String::new(),
     });
@@ -906,13 +912,13 @@ fn accept_script(ctx: &ReducerContext, player_id: u32, script: String) -> Result
     let stats = sim::LuaBot::new(&script, 0)?.stats;
     if let Some(row) = ctx.db.submission().player_id().find(player_id) {
         ctx.db.submission().player_id().update(Submission {
-            build: vec![
+            build: Some(vec![
                 ((stats.max_hp - 60) / 20) as u32,
                 ((stats.walk_speed - 2.2) / 0.4).round() as u32,
                 ((stats.attack_damage - 6) / 2) as u32,
                 ((stats.attack_range - 1.2) / 0.15).round() as u32,
                 7 - stats.attack_cooldown,
-            ],
+            ]),
             max_hp: stats.max_hp,
             ..row
         });
@@ -1350,7 +1356,7 @@ fn room_submissions(ctx: &ViewContext) -> Vec<Submission> {
             if matches!(room.phase, Phase::Prompting | Phase::Countdown)
                 && Some(submission.player_id) != caller_id
             {
-                submission.build.clear();
+                submission.build = None;
                 submission.max_hp = rules::MAX_HP;
             }
             submission

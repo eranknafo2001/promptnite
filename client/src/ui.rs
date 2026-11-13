@@ -1054,7 +1054,9 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
             painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
         }
-        let points = snapshot.submission_of(bot.id).map(|s| s.build.as_slice());
+        let points = snapshot
+            .submission_of(bot.id)
+            .and_then(|s| s.build.as_deref());
         let balanced = [2, 2, 2, 2, 2];
         if let Some(points) = points
             .filter(|p| p.len() == 5)
@@ -1165,7 +1167,10 @@ fn stat_strip(
 /// During prompting and countdown, only the caller's build is visible.
 fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot) {
     let sub = snapshot.submission_of(snapshot.me.id);
-    let ready = sub.filter(|s| s.status == SubmissionStatus::Ready && s.build.len() == 5);
+    let ready = sub.filter(|s| {
+        s.status == SubmissionStatus::Ready
+            && s.build.as_ref().is_some_and(|build| build.len() == 5)
+    });
     let outer = egui::Rect::from_min_size(
         egui::pos2(screen.left() + EDGE, screen.center().y - 65.0),
         egui::vec2(350.0, 140.0),
@@ -1201,7 +1206,7 @@ fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapsho
             painter,
             inner.left_top() + egui::vec2(0.0, 81.0),
             inner.width(),
-            &sub.build,
+            sub.build.as_deref().unwrap_or_default(),
             theme::INK,
         );
     } else {
