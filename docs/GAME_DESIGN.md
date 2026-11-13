@@ -41,6 +41,10 @@ goes to the next player who enters it, with the settings back to default.
    intervene.
 5. **Results** — the winner is shown, then the next round starts at step 1.
 
+A player who sends the same prompt again, unchanged, keeps the bot they had:
+the module reuses the script and the agent is not asked. Any change to the
+prompt, or moving to another room, gets a new script.
+
 ## What a bot can do
 
 Kept deliberately small for now. Each simulation tick the script returns one of:
