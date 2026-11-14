@@ -48,13 +48,6 @@ fn main() {
                     }),
                     ..default()
                 })
-                // No `.meta` files next to the assets, so don't ask for them:
-                // a server that answers a missing file with a page (`trunk
-                // serve` does) would otherwise fail every load.
-                .set(bevy::asset::AssetPlugin {
-                    meta_check: bevy::asset::AssetMetaCheck::Never,
-                    ..default()
-                })
                 .set(LogPlugin {
                     custom_layer: logs::layer,
                     ..default()
