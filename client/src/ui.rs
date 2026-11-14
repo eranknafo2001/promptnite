@@ -1738,8 +1738,8 @@ fn bot_strip(
     replay: &Replay,
 ) {
     const PADDING: egui::Vec2 = egui::vec2(16.0, 12.0);
-    const ROW: f32 = 38.0;
-    const LAST_ROW: f32 = 28.0;
+    const ROW: f32 = 44.0;
+    const LAST_ROW: f32 = 34.0;
     const COLUMN_GAP: f32 = 20.0;
 
     if replay.bots.is_empty() {
@@ -1764,7 +1764,8 @@ fn bot_strip(
 }
 
 /// One bot of the strip, `width` wide from `at`: colour dot,
-/// name (cut off if too long) and health, the health bar underneath.
+/// name (cut off if too long) and health, the health bar underneath and
+/// the thinner stamina bar under that.
 fn bot_row(
     painter: &egui::Painter,
     at: egui::Pos2,
@@ -1774,6 +1775,7 @@ fn bot_row(
 ) {
     const DOT: f32 = 10.0;
     const BAR: f32 = 6.0;
+    const STAMINA_BAR: f32 = 4.0;
 
     let right = at.x + width;
     let alive = bot.action != BotAction::Dead;
@@ -1817,6 +1819,18 @@ fn bot_row(
     if left > 0.0 {
         let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * left, BAR));
         painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
+    }
+    let bar = egui::Rect::from_min_size(
+        egui::pos2(at.x, at.y + 30.0),
+        egui::vec2(width, STAMINA_BAR),
+    );
+    painter.rect_filled(bar, STAMINA_BAR / 2.0, theme::HP_TRACK);
+    if alive && bot.stamina > 0.0 {
+        let filled = egui::Rect::from_min_size(
+            bar.min,
+            egui::vec2(bar.width() * bot.stamina.clamp(0.0, 1.0), STAMINA_BAR),
+        );
+        painter.rect_filled(filled, STAMINA_BAR / 2.0, theme::STAMINA);
     }
 }
 
