@@ -62,6 +62,9 @@ const PROMPT_COLUMN_WIDTH: std::ops::RangeInclusive<f32> = 360.0..=540.0;
 
 /// Below this width the interface switches to its stacked layout.
 pub const COMPACT_WIDTH: f32 = 640.0;
+/// A compact window shorter than this has no room for the players' list
+/// above the owner's room settings and the prompt.
+const ROSTER_MIN_HEIGHT: f32 = 700.0;
 /// A compact window this low has the on-screen keyboard open: the prompt
 /// takes all of it.
 const KEYBOARD_OPEN_HEIGHT: f32 = 520.0;
@@ -366,7 +369,11 @@ fn draw(
     faults(ctx, screen, snapshot, &replay, above_faults);
     // Compact: the players only while a prompt is due. The bots' health
     // strip says who is who during the match.
-    let roster = (!typing && (!compact || prompting))
+    // On a short phone the owner's settings and the prompt need the room
+    // the list would take.
+    let crowded =
+        compact && writing && snapshot.i_own_the_room() && screen.height() < ROSTER_MIN_HEIGHT;
+    let roster = (!typing && !crowded && (!compact || prompting))
         .then(|| roster(&background, screen, snapshot, &replay, compact));
     let mut top = roster.map_or(screen.top(), |roster| roster.bottom()) + EDGE;
 
@@ -403,7 +410,12 @@ fn draw(
                 if problem {
                     height += 100.0;
                 }
-                let top = top.max(screen.bottom() - EDGE - height);
+                // Never less than the prompt needs to stay usable, even if
+                // that covers the bottom of what is stacked above.
+                let least = if problem { 250.0 } else { 180.0 };
+                let top = top
+                    .max(screen.bottom() - EDGE - height)
+                    .min(screen.bottom() - EDGE - least);
                 egui::Rect::from_min_max(
                     egui::pos2(screen.left() + EDGE, top),
                     screen.max - egui::Vec2::splat(EDGE),
