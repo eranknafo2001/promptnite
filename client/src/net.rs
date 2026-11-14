@@ -245,7 +245,12 @@ fn on_connected(
         return;
     };
     info!("connected as {}", message.identity);
-    token::save(&message.access_token);
+    // Keep the first token. When we connect with one, the browser SDK trades
+    // it for a token that expires in a minute and the server hands that one
+    // back here: saving it would lock this tab out on its next reload.
+    if token::load().is_none() {
+        token::save(&message.access_token);
+    }
     // The server forgets that we are in the room when the connection drops.
     session.unsent = session.joined.is_some();
 
@@ -318,7 +323,7 @@ mod token {
     pub fn load() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
-            storage()?.get_item("promptnite_token").ok()?
+            storage()?.get_item("promptnite_identity").ok()?
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -329,7 +334,7 @@ mod token {
     pub fn save(_token: &str) {
         #[cfg(target_arch = "wasm32")]
         if let Some(storage) = storage() {
-            let _ = storage.set_item("promptnite_token", _token);
+            let _ = storage.set_item("promptnite_identity", _token);
         }
     }
 }
