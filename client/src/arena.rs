@@ -117,6 +117,7 @@ pub struct BotAssets {
     tombstone: Handle<WorldAsset>,
     blade: (Handle<Mesh>, Handle<StandardMaterial>),
     slash: Handle<Mesh>,
+    shield: Handle<StandardMaterial>,
     hilt: (Handle<Mesh>, Handle<StandardMaterial>),
     stem: Handle<Mesh>,
     stem_material: Handle<StandardMaterial>,
@@ -167,7 +168,16 @@ pub fn plugin(app: &mut App) {
             Update,
             (
                 point_of_view,
-                (replay, sync_bots, swing_hands, fade_slashes, lunge, jiggle).chain(),
+                (
+                    replay,
+                    sync_bots,
+                    raise_shields,
+                    swing_hands,
+                    fade_slashes,
+                    lunge,
+                    jiggle,
+                )
+                    .chain(),
             ),
         );
 }
@@ -453,6 +463,12 @@ fn setup(
             materials.add(theme::DAGGER_BLADE),
         ),
         slash: meshes.add(slash_mesh()),
+        shield: materials.add(StandardMaterial {
+            base_color: theme::SHIELD,
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
         hilt: (
             meshes.add(Cuboid::new(0.7, 0.14, 0.14)),
             materials.add(theme::DAGGER_HILT),
@@ -820,6 +836,14 @@ pub fn sync_bots(
                     transform,
                     children![
                         (
+                            Bubble(id),
+                            Mesh3d(assets.mesh.clone()),
+                            MeshMaterial3d(assets.shield.clone()),
+                            Transform::from_scale(Vec3::splat(BUBBLE_SIZE)),
+                            Visibility::Hidden,
+                            bevy::light::NotShadowCaster,
+                        ),
+                        (
                             Nose(id),
                             Transform::default(),
                             Visibility::default(),
@@ -871,6 +895,27 @@ pub fn sync_bots(
                 .id();
             spawn_antenna(&mut commands, &assets, bot, material, transform);
         }
+    }
+}
+
+/// The bubble round a live bot, shown on the ticks its shield is up.
+#[derive(Component)]
+pub struct Bubble(u32);
+
+/// In bot radii: clear of the body, inside the hand.
+const BUBBLE_SIZE: f32 = 1.4;
+
+fn raise_shields(replay: Res<Replay>, mut bubbles: Query<(&Bubble, &mut Visibility)>) {
+    for (bubble, mut visibility) in &mut bubbles {
+        let up = replay
+            .bots
+            .iter()
+            .any(|bot| bot.id == bubble.0 && bot.action == BotAction::Shield);
+        visibility.set_if_neq(if up {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
 }
 

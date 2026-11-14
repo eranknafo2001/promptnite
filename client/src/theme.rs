@@ -69,6 +69,9 @@ pub const HIT_FLASH: Color = Color::srgb(1.0, 0.55, 0.1);
 /// A dagger swing's trail: a warm white.
 pub const SLASH: Color = Color::srgb(1.0, 0.85, 0.65);
 
+/// The bubble round a bot whose shield is up: a see-through cold blue.
+pub const SHIELD: Color = Color::srgba(0.55, 0.85, 1.0, 0.35);
+
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.

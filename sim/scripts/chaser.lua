@@ -4,6 +4,8 @@
 -- The game calls tick(state) once per simulation step and expects one action:
 --   { action = "walk", dx = <number>, dy = <number> }   direction, any length
 --   { action = "dash", dx = <number>, dy = <number> }   a faster step, costs stamina
+--   { action = "shield", dx = <number>, dy = <number> } block every hit this tick, costs stamina;
+--                                                       the direction is optional, a slow step
 --   { action = "attack" }                               hit nearest enemy in range, costs stamina
 --   { action = "idle" }                                 (or return nil)
 --

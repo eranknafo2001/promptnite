@@ -60,6 +60,7 @@ fn a_script_cannot_outgrow_the_heap_cap() {
             y: 0.0,
             hp: 100,
             stamina: rules::MAX_STAMINA,
+            shielding: false,
             dist: 0.0,
         },
         cooldown: 0,

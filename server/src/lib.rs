@@ -301,6 +301,8 @@ pub enum BotAction {
     // New kinds go last: the hosted database only takes an enum that grew at
     // its end without a manual migration.
     Dash,
+    /// Had its shield up.
+    Shield,
 }
 
 #[derive(SpacetimeType, Clone, Debug)]
@@ -1078,6 +1080,7 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
                         sim::ActionKind::Miss => BotAction::Miss,
                         sim::ActionKind::Dead => BotAction::Dead,
                         sim::ActionKind::Dash => BotAction::Dash,
+                        sim::ActionKind::Shield => BotAction::Shield,
                     },
                 })
                 .collect(),

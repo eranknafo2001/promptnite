@@ -78,6 +78,13 @@ pub const DASH_STAMINA_COST: i32 = 20;
 /// A `dash` covers this many times the distance of a `walk`.
 pub const DASH_SPEED_FACTOR: f32 = 3.0;
 
+/// What every tick with the shield up costs. A bot with less cannot raise
+/// it. More than a tick wins back, so no bot hides behind it for ever.
+pub const SHIELD_STAMINA_COST: i32 = 5;
+
+/// A bot behind its shield moves this many times the distance of a `walk`.
+pub const SHIELD_SPEED_FACTOR: f32 = 0.5;
+
 // --- Sandbox limits for untrusted Lua -------------------------------------
 
 /// Fuel a script may spend while loading (top-level code). The VM charges

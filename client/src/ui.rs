@@ -708,7 +708,7 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 ui.add_space(10.0);
                 for line in [
                     "Where it is, its hp and stamina, and how long until it can punch again",
-                    "Where every living enemy is, their hp, stamina and how far away they are",
+                    "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
                     "The arena's size, the time, and the rules: speed, punch range, damage",
                     "Anything it chose to remember from earlier in the match",
                 ] {
@@ -716,9 +716,10 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 }
                 ui.add_space(4.0);
                 ui.label(small(
-                    "It can walk, dash, punch the nearest enemy in range, or wait: one per tick. \
-                     Dashes and punches cost stamina, which comes back on ticks it does \
-                     neither. It can't see other prompts or when enemies can punch next.",
+                    "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
+                     wait: one per tick. Dashes, punches and the shield cost stamina, which \
+                     comes back on ticks it does none of them. A shield stops every hit but \
+                     slows the bot to half speed. It can't see other prompts or when enemies can punch next.",
                 ));
 
                 ui.add_space(14.0);
