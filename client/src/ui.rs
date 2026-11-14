@@ -31,7 +31,7 @@ use promptnite_bindings::*;
 
 use crate::{
     arena::{ArenaCamera, BotView, Replay},
-    clipboard,
+    clipboard, teleporter,
     theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
@@ -88,12 +88,31 @@ pub enum Screen {
     Room(Box<Snapshot>),
 }
 
+/// Camera-facing UI state: placement uses the unobstructed arena view.
+#[derive(Resource, Default)]
+pub struct ArenaUi {
+    pub placing: bool,
+}
+
 /// What the player asked for. Carried out by `net` (or `sandbox`).
 #[derive(Message, Clone)]
 pub enum Action {
-    Join { name: String, room: String },
+    Join {
+        name: String,
+        room: String,
+    },
     SubmitPrompt(String),
-    SetRoomSettings { match_secs: u32, house_bot: bool },
+    SetRoomSettings {
+        match_secs: u32,
+        house_bot: bool,
+    },
+    /// Put a teleporter on the floor at sim `(x, y)`.
+    AddTeleporter {
+        x: f32,
+        y: f32,
+    },
+    /// Take the teleporter with this number away.
+    RemoveTeleporter(u32),
 }
 
 #[derive(Resource, Default)]
@@ -114,6 +133,10 @@ struct Form {
     mac: bool,
     /// The prompt help popup is open.
     help: bool,
+    /// The owner is placing teleporters: clicks on the roof add and remove
+    /// pads.
+    placing: bool,
+    touch: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,12 +149,32 @@ enum Field {
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin::default())
         .add_message::<Action>()
+        .init_resource::<ArenaUi>()
         .insert_resource(Form {
             mac: is_mac(),
+            touch: is_touch(),
             ..default()
         })
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, draw);
+    #[cfg(target_arch = "wasm32")]
+    if is_touch() {
+        app.add_systems(
+            PostUpdate,
+            on_screen_keyboard.after(bevy_egui::EguiPostUpdateSet::ProcessOutput),
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn on_screen_keyboard(outputs: Query<&bevy_egui::EguiOutput>, mut open: Local<bool>) {
+    let editing = outputs.iter().any(|output| {
+        output.platform_output.ime.is_some() || output.platform_output.mutable_text_under_cursor
+    });
+    if editing != *open {
+        *open = editing;
+        bevy_egui::text_agent::update_text_agent(editing);
+    }
 }
 
 fn setup(mut commands: Commands, mut settings: ResMut<EguiGlobalSettings>) {
@@ -167,6 +210,25 @@ pub fn is_mac() -> bool {
     }
 }
 
+pub fn is_touch() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window().is_some_and(|window| {
+            let navigator = window.navigator();
+            let agent = navigator.user_agent().unwrap_or_default().to_lowercase();
+            ["android", "iphone", "ipad", "ipod", "mobile"]
+                .iter()
+                .any(|device| agent.contains(device))
+                // An iPad says it is a Mac, but a Mac has no touch screen.
+                || (agent.contains("mac") && navigator.max_touch_points() > 1)
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
 /// The room we are in and everything in it.
 pub struct Snapshot {
     pub game: Room,
@@ -175,6 +237,8 @@ pub struct Snapshot {
     /// This round's.
     pub submissions: Vec<Submission>,
     pub faults: Vec<MatchFault>,
+    /// The room's teleporter pads, by number.
+    pub teleporters: Vec<Teleporter>,
     pub me: Player,
     /// Why the server would not take our last prompt at all (sent too soon
     /// after the one before, the agents are busy, ...).
@@ -214,6 +278,18 @@ impl Snapshot {
     }
 }
 
+/// Reserve typing space when a mobile iframe cannot report keyboard height.
+fn clear_of_keyboard(ctx: &egui::Context, touch: bool) -> egui::Rect {
+    let window = ctx.viewport_rect();
+    let covered =
+        touch && ctx.text_edit_focused() && window.width() < 760.0 && window.height() >= 520.0;
+    if covered {
+        window.with_max_y(window.top() + window.height() * 0.46)
+    } else {
+        window
+    }
+}
+
 /// Narrow windows use a stacked layout, including phones rotated mid-round.
 pub fn compact_view(width: f32) -> bool {
     width < 760.0
@@ -221,13 +297,14 @@ pub fn compact_view(width: f32) -> bool {
 
 fn draw(
     mut contexts: EguiContexts,
-    mut form: ResMut<Form>,
+    (mut form, mut arena_ui): (ResMut<Form>, ResMut<ArenaUi>),
     screen: Res<Screen>,
     mut actions: MessageWriter<Action>,
     replay: Res<Replay>,
     camera: Single<(&Camera, &GlobalTransform), With<ArenaCamera>>,
     mut fonts_set: Local<bool>,
 ) -> Result {
+    arena_ui.placing = false;
     let ctx = &*contexts.ctx_mut()?;
     if !*fonts_set {
         theme::set_fonts(ctx);
@@ -241,9 +318,9 @@ fn draw(
     if !theme::fonts_ready(ctx) {
         return Ok(());
     }
-    let screen_rect = ctx.viewport_rect();
+    let screen_rect = clear_of_keyboard(ctx, form.touch);
     let compact = compact_view(screen_rect.width());
-    let portrait = screen_rect.height() > screen_rect.width();
+    let portrait = ctx.viewport_rect().height() > ctx.viewport_rect().width() || form.touch;
     let default_widgets = egui::Visuals::light().widgets;
     ctx.all_styles_mut(|style| {
         for (widget, normal) in [
@@ -265,8 +342,8 @@ fn draw(
                 normal.corner_radius
             };
         }
-        style.spacing.interact_size.y = if compact { 44.0 } else { 24.0 };
-        style.spacing.button_padding = if compact {
+        style.spacing.interact_size.y = if compact || form.touch { 44.0 } else { 24.0 };
+        style.spacing.button_padding = if compact || form.touch {
             egui::vec2(12.0, 10.0)
         } else {
             egui::vec2(4.0, 1.0)
@@ -296,7 +373,7 @@ fn draw(
             return Ok(());
         }
         Screen::Join { known_name, error } => {
-            join_screen(ctx, known_name, error, &mut form, &mut actions);
+            join_screen(ctx, screen_rect, known_name, error, &mut form, &mut actions);
             return Ok(());
         }
         Screen::Room(snapshot) => snapshot,
@@ -311,6 +388,16 @@ fn draw(
     background.multiply_opacity(dim);
 
     let (camera, camera_transform) = *camera;
+    // Only the owner moves the pads, and only while the next match is still
+    // to be set up.
+    let game = &snapshot.game;
+    form.placing &= game.phase == Phase::Prompting && snapshot.i_own_the_room() && !form.help;
+    if form.placing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        form.placing = false;
+    }
+    arena_ui.placing = form.placing;
+    let view = (camera, camera_transform);
+    teleporters(ctx, &background, snapshot, view, form.placing, &mut actions);
     bot_markers(&background, &replay, camera, camera_transform);
     if !compact {
         bot_cards(&background, screen, snapshot, &replay);
@@ -324,15 +411,25 @@ fn draw(
     if !compact {
         faults(ctx, snapshot, &replay, clock);
     }
-    let roster = if compact {
-        compact_roster(ctx, screen, snapshot, &replay, dim, &mut actions)
+    let typing = compact && screen.height() < 520.0 && ctx.text_edit_focused();
+    let roster = if typing {
+        egui::Rect::from_min_size(screen.min, egui::Vec2::ZERO)
+    } else if compact {
+        compact_roster(
+            ctx,
+            screen,
+            snapshot,
+            &replay,
+            dim,
+            &mut form.placing,
+            &mut actions,
+        )
     } else {
         roster(&background, screen, snapshot, &replay)
     };
 
-    let game = &snapshot.game;
     if game.phase == Phase::Prompting && snapshot.i_own_the_room() && !compact {
-        room_settings(ctx, game, dim, &mut actions);
+        room_settings(ctx, snapshot, dim, &mut form.placing, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
     // Whatever the phase: the last bot ready starts the countdown at once.
@@ -343,7 +440,16 @@ fn draw(
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
             let top = roster.bottom() + 12.0;
-            prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
+            if compact && form.placing {
+                status_line(
+                    ctx,
+                    false,
+                    "Tap the roof to add a pad; tap a pad to remove it.",
+                    0.0,
+                );
+            } else {
+                prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
+            }
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
             status_line(ctx, true, "Choosing build…", 0.0);
@@ -378,6 +484,7 @@ fn draw(
 /// First screen, on every launch: who are you, and which room?
 fn join_screen(
     ctx: &egui::Context,
+    screen: egui::Rect,
     known_name: &Option<String>,
     error: &Option<String>,
     form: &mut Form,
@@ -410,60 +517,67 @@ fn join_screen(
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
                 ui.set_width(380.0_f32.min((ctx.viewport_rect().width() - 4.0 * EDGE).max(100.0)));
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("Who's playing, and where?")
-                            .font(theme::bold(theme::SIZE_TITLE))
-                            .color(theme::INK),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(small("Players with the same room ID play together."));
-                    ui.add_space(14.0);
+                let max_height =
+                    (screen.height() - 2.0 * EDGE - box_frame().total_margin().sum().y).max(80.0);
+                ui.set_max_height(max_height);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new("Who's playing, and where?")
+                                    .font(theme::bold(theme::SIZE_TITLE))
+                                    .color(theme::INK),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(small("Players with the same room ID play together."));
+                            ui.add_space(14.0);
 
-                    ui.spacing_mut().item_spacing.y = JOIN_CONTROL_GAP;
-                    let name = text_field(ui, &mut form.name, "Your name", MAX_NAME_CHARS);
-                    let room = text_field(ui, &mut form.room, "Room ID", MAX_ROOM_CHARS);
-                    if form.focused != Some(Field::Join) {
-                        form.focused = Some(Field::Join);
-                        if !compact {
-                            name.request_focus();
-                        }
-                    }
+                            ui.spacing_mut().item_spacing.y = JOIN_CONTROL_GAP;
+                            let name = text_field(ui, &mut form.name, "Your name", MAX_NAME_CHARS);
+                            let room = text_field(ui, &mut form.room, "Room ID", MAX_ROOM_CHARS);
+                            if form.focused != Some(Field::Join) {
+                                form.focused = Some(Field::Join);
+                                if !compact && !form.touch {
+                                    name.request_focus();
+                                }
+                            }
 
-                    let play = full_width_button(
-                        ui,
-                        "Play",
-                        !form.name.trim().is_empty() && !form.room.trim().is_empty(),
-                        JOIN_CONTROL_HEIGHT,
-                    )
-                    .clicked();
-                    // Why the server turned the last attempt away (room full).
-                    if let Some(error) = error {
-                        ui.add_space(12.0);
-                        theme::error_panel(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(theme::error_heading("Can't join"));
-                            ui.label(theme::error_body(error));
+                            let play = full_width_button(
+                                ui,
+                                "Play",
+                                !form.name.trim().is_empty() && !form.room.trim().is_empty(),
+                                JOIN_CONTROL_HEIGHT,
+                            )
+                            .clicked();
+                            // Why the server turned the last attempt away (room full).
+                            if let Some(error) = error {
+                                ui.add_space(12.0);
+                                theme::error_panel(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(theme::error_heading("Can't join"));
+                                    ui.label(theme::error_body(error));
+                                });
+                            }
+
+                            // A single-line box gives up the focus on Enter. Whichever box
+                            // is still empty gets it next; with both filled in, we join.
+                            let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            if play || (entered && (name.lost_focus() || room.lost_focus())) {
+                                let (who, at) = (form.name.trim(), form.room.trim());
+                                if who.is_empty() {
+                                    name.request_focus();
+                                } else if at.is_empty() {
+                                    room.request_focus();
+                                } else {
+                                    actions.write(Action::Join {
+                                        name: who.to_string(),
+                                        room: at.to_string(),
+                                    });
+                                }
+                            }
                         });
-                    }
-
-                    // A single-line box gives up the focus on Enter. Whichever box
-                    // is still empty gets it next; with both filled in, we join.
-                    let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if play || (entered && (name.lost_focus() || room.lost_focus())) {
-                        let (who, at) = (form.name.trim(), form.room.trim());
-                        if who.is_empty() {
-                            name.request_focus();
-                        } else if at.is_empty() {
-                            room.request_focus();
-                        } else {
-                            actions.write(Action::Join {
-                                name: who.to_string(),
-                                room: at.to_string(),
-                            });
-                        }
-                    }
-                });
+                    });
             });
         });
 }
@@ -531,7 +645,7 @@ fn prompt_box(
         egui::pos2(screen.right() - EDGE - width, top),
         egui::pos2(
             screen.right() - EDGE,
-            if compact {
+            if compact && !(ctx.text_edit_focused() && screen.height() < 520.0) {
                 (top + screen.height() * 0.48).min(screen.bottom() - EDGE)
             } else {
                 screen.bottom() - EDGE
@@ -638,7 +752,7 @@ fn prompt_box(
                             let this = Field::Prompt(snapshot.game.id, snapshot.game.round);
                             if form.focused != Some(this) {
                                 form.focused = Some(this);
-                                if !compact {
+                                if !compact && !form.touch {
                                     field.request_focus();
                                 }
                             }
@@ -786,7 +900,14 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
 
 /// The room's settings, top left. Only the owner gets them, and only while
 /// prompting: that is when the next match is still to be set up.
-fn room_settings(ctx: &egui::Context, game: &Room, dim: f32, actions: &mut MessageWriter<Action>) {
+fn room_settings(
+    ctx: &egui::Context,
+    snapshot: &Snapshot,
+    dim: f32,
+    placing: &mut bool,
+    actions: &mut MessageWriter<Action>,
+) {
+    let game = &snapshot.game;
     egui::Area::new(egui::Id::new("room_settings"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
         .interactable(dim == 1.0)
@@ -816,6 +937,18 @@ fn room_settings(ctx: &egui::Context, game: &Room, dim: f32, actions: &mut Messa
                         match_secs: game.match_secs,
                         house_bot,
                     });
+                }
+                ui.horizontal(|ui| {
+                    let count = snapshot.teleporters.len();
+                    ui.label(small(format!("Teleporters {count}/{}", teleporter::MAX)));
+                    let label = if *placing { "Done" } else { "Place" };
+                    if ui.selectable_label(*placing, label).clicked() {
+                        *placing = !*placing;
+                    }
+                });
+                if *placing {
+                    ui.label(small("Click the roof to add a pad."));
+                    ui.label(small("Click a pad to take it away."));
                 }
             });
         });
@@ -874,34 +1007,38 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                         ui.label(small(
                             "Your agent turns your prompt into a script. Ten times a second, \
                      the script looks at the arena and picks one move.",
-                        ));
-                        ui.add_space(10.0);
-                        for line in [
-                            "Where it is, its hp, and how long until it can punch again",
-                            "Where every living enemy is, their hp and how far away they are",
-                            "The arena's size, the time, and the rules: speed, punch range, damage",
-                            "Anything it chose to remember from earlier in the match",
-                        ] {
-                            bullet(ui, line);
-                        }
-                        ui.add_space(4.0);
-                        ui.label(small(
-                            "It can walk, punch the nearest enemy in range, or wait: one per tick. \
-                     It can't see other prompts or when enemies can punch next.",
-                        ));
+                ));
+                ui.add_space(10.0);
+                for line in [
+                    "Where it is, its hp and stamina, and how long until it can punch again",
+                    "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
+                    "Where the numbered teleporters are and where each one leads",
+                    "The arena's size, the time, and the rules: speed, punch range, damage",
+                    "Anything it chose to remember from earlier in the match",
+                ] {
+                    bullet(ui, line);
+                }
+                ui.add_space(4.0);
+                ui.label(small(
+                    "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
+                     wait: one per tick. Dashes, punches and the shield cost stamina, which \
+                     comes back on ticks it does none of them. A shield stops every hit but \
+                     slows the bot to half speed. A teleporter takes any bot that gets onto \
+                     it to the next number, and the last one back to 1. It can't see other prompts or when enemies can punch next.",
+                ));
 
-                        ui.add_space(14.0);
-                        ui.label(theme::heading("Writing a good prompt"));
-                        ui.add_space(4.0);
-                        for line in [
-                            "Choose a build: health, speed, damage, reach, or faster punches",
-                            "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
-                            "Say who to go after when there's more than one enemy",
-                            "At the time limit the most hp wins, so plan for the clock",
-                            "A short, clear plan beats a clever, vague one",
-                        ] {
-                            bullet(ui, line);
-                        }
+                ui.add_space(14.0);
+                ui.label(theme::heading("Writing a good prompt"));
+                ui.add_space(4.0);
+                for line in [
+                    "Choose a build: health, speed, damage, reach, or faster punches",
+                    "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
+                    "Say who to go after when there's more than one enemy",
+                    "At the time limit the most hp wins, so plan for the clock",
+                    "A short, clear plan beats a clever, vague one",
+                ] {
+                    bullet(ui, line);
+                }
 
                         ui.add_space(12.0);
                         ui.allocate_ui_with_layout(
@@ -1213,6 +1350,107 @@ fn shadowed_text(
     painter.text(at, egui::Align2::CENTER_CENTER, text, font, color);
 }
 
+/// The number on every teleporter and, while the owner is placing them,
+/// what a click under the cursor would do: a ring where a new pad would
+/// land, or around the pad it would take away.
+fn teleporters(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    snapshot: &Snapshot,
+    (camera, camera_transform): (&Camera, &GlobalTransform),
+    placing: bool,
+    actions: &mut MessageWriter<Action>,
+) {
+    // The arena camera covers the whole window, so its viewport coordinates
+    // are egui coordinates. Sim (x, y) is the ground plane; Bevy's up is Y.
+    let on_screen = |x: f32, y: f32| {
+        camera
+            .world_to_viewport(camera_transform, Vec3::new(x, 0.1, y))
+            .ok()
+            .map(|at| egui::pos2(at.x, at.y))
+    };
+    let pads = &snapshot.teleporters;
+    for pad in pads {
+        if let Some(at) = on_screen(pad.x, pad.y) {
+            let number = pad.number.to_string();
+            shadowed_text(painter, at, number, theme::SIZE_HEADING, theme::TEXT);
+        }
+    }
+
+    if !placing || ctx.is_pointer_over_egui() {
+        return;
+    }
+    let Some(cursor) = ctx.pointer_hover_pos() else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(camera_transform, Vec2::new(cursor.x, cursor.y)) else {
+        return;
+    };
+    let Some(distance) = ray.intersect_plane(Vec3::ZERO, InfinitePlane3d::new(Vec3::Y)) else {
+        return;
+    };
+    let ground = ray.get_point(distance);
+    let (x, y) = (ground.x, ground.z);
+    let half = snapshot.game.arena_half_size;
+    if x.abs() > half || y.abs() > half {
+        return; // not over the roof
+    }
+
+    let hovered = pads
+        .iter()
+        .find(|pad| (pad.x - x).hypot(pad.y - y) < teleporter::RADIUS);
+    let (centre, hint, action) = match hovered {
+        Some(pad) => (
+            (pad.x, pad.y),
+            Some("Take away"),
+            Some(Action::RemoveTeleporter(pad.number)),
+        ),
+        None => match teleporter::refusal(pads, x, y) {
+            Some(reason) => ((x, y), Some(reason), None),
+            None => ((x, y), None, Some(Action::AddTeleporter { x, y })),
+        },
+    };
+    let adding = hovered.is_none() && action.is_some();
+    let colour = if adding {
+        theme::TELEPORTER_RING
+    } else {
+        theme::BAD
+    };
+
+    const CORNERS: usize = 40;
+    let ring: Vec<egui::Pos2> = (0..CORNERS)
+        .filter_map(|i| {
+            let angle = std::f32::consts::TAU * i as f32 / CORNERS as f32;
+            let (sin, cos) = angle.sin_cos();
+            on_screen(
+                centre.0 + teleporter::RADIUS * cos,
+                centre.1 + teleporter::RADIUS * sin,
+            )
+        })
+        .collect();
+    if ring.len() == CORNERS {
+        painter.add(egui::Shape::convex_polygon(
+            ring,
+            colour.gamma_multiply(0.25),
+            egui::Stroke::new(2.5, colour),
+        ));
+    }
+    if let Some(hint) = hint {
+        let at = cursor + egui::vec2(0.0, -28.0);
+        shadowed_text(painter, at, hint.into(), theme::SIZE_SMALL, theme::TEXT);
+    }
+    ctx.set_cursor_icon(if action.is_some() {
+        egui::CursorIcon::PointingHand
+    } else {
+        egui::CursorIcon::NotAllowed
+    });
+    if let Some(action) = action
+        && ctx.input(|input| input.pointer.primary_clicked())
+    {
+        actions.write(action);
+    }
+}
+
 /// A down-pointing triangle in the bot's colour floating above every bot
 /// still standing.
 fn bot_markers(
@@ -1340,6 +1578,21 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
                 egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height())),
                 3.0,
                 color,
+            );
+        }
+        let stamina = egui::Rect::from_min_size(
+            inner.left_top() + egui::vec2(0.0, 58.0),
+            egui::vec2(inner.width(), 4.0),
+        );
+        painter.rect_filled(stamina, 2.0, theme::HP_TRACK);
+        if alive && bot.stamina > 0.0 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    stamina.min,
+                    egui::vec2(stamina.width() * bot.stamina.clamp(0.0, 1.0), 4.0),
+                ),
+                2.0,
+                theme::STAMINA,
             );
         }
         let balanced = [2, 2, 2, 2, 2];
@@ -1474,8 +1727,13 @@ fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapsho
         s.status == SubmissionStatus::Ready
             && s.build.as_ref().is_some_and(|build| build.len() == 5)
     });
+    let top = if snapshot.game.phase == Phase::Prompting && snapshot.i_own_the_room() {
+        (screen.center().y - 65.0).max(screen.top() + 220.0)
+    } else {
+        screen.center().y - 65.0
+    };
     let outer = egui::Rect::from_min_size(
-        egui::pos2(screen.left() + EDGE, screen.center().y - 65.0),
+        egui::pos2(screen.left() + EDGE, top),
         egui::vec2(BOT_PANEL_WIDTH, 140.0),
     );
     theme::panel(painter, outer);
@@ -1565,6 +1823,7 @@ fn compact_roster(
     snapshot: &Snapshot,
     replay: &Replay,
     dim: f32,
+    placing: &mut bool,
     actions: &mut MessageWriter<Action>,
 ) -> egui::Rect {
     egui::Area::new(egui::Id::new("compact_room"))
@@ -1590,12 +1849,38 @@ fn compact_roster(
                             );
                             if let Some(bot) = replay.bots.iter().find(|bot| bot.id == player.id) {
                                 ui.label(format!(
-                                    "{} · {} HP · {state}",
+                                    "{} · {} HP · {:.0}% stamina · {state}",
                                     player.name,
-                                    bot.hp.max(0)
+                                    bot.hp.max(0),
+                                    bot.stamina.clamp(0.0, 1.0) * 100.0
                                 ));
                             } else {
                                 ui.label(format!("{} · {state}", player.name));
+                            }
+                        }
+                        let house_present = if snapshot.game.phase == Phase::Prompting {
+                            snapshot.game.house_bot
+                                && snapshot.players.iter().filter(|p| p.online).count()
+                                    < MAX_PLAYERS
+                        } else {
+                            replay.bots.iter().any(|bot| bot.id == HOUSE_BOT_ID)
+                        };
+                        if house_present {
+                            if let Some(bot) = replay.bots.iter().find(|bot| bot.id == HOUSE_BOT_ID)
+                            {
+                                let (state, _) = bot_state(
+                                    &snapshot.game,
+                                    replay,
+                                    HOUSE_BOT_ID,
+                                    Some(SubmissionStatus::Ready),
+                                );
+                                ui.label(format!(
+                                    "House bot · {} HP · {:.0}% stamina · {state}",
+                                    bot.hp.max(0),
+                                    bot.stamina.clamp(0.0, 1.0) * 100.0
+                                ));
+                            } else {
+                                ui.label("House bot · Ready");
                             }
                         }
                         let shown_tick =
@@ -1636,6 +1921,26 @@ fn compact_roster(
                                     match_secs: snapshot.game.match_secs,
                                     house_bot,
                                 });
+                            }
+                            ui.separator();
+                            ui.label(small(format!(
+                                "Teleporters {}/{}",
+                                snapshot.teleporters.len(),
+                                teleporter::MAX
+                            )));
+                            if ui
+                                .selectable_label(
+                                    *placing,
+                                    if *placing {
+                                        "Done placing"
+                                    } else {
+                                        "Place teleporters"
+                                    },
+                                )
+                                .clicked()
+                            {
+                                *placing = !*placing;
+                                ui.close();
                             }
                         }
                     });

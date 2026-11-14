@@ -60,6 +60,42 @@ pub const ATTACK_DAMAGE: i32 = 10;
 /// Ticks a bot must wait after attacking before it can attack again.
 pub const ATTACK_COOLDOWN_TICKS: u32 = 5;
 
+/// Every bot starts a match with this much stamina and never holds more. It
+/// is the same for all builds.
+pub const MAX_STAMINA: i32 = 100;
+
+/// Stamina won back on every tick a bot spends none: walking, standing
+/// still, or waiting out its cooldown.
+pub const STAMINA_REGEN: i32 = 2;
+
+/// What a swing costs, hit or miss. A bot with less cannot swing. More than
+/// a default bot wins back between two swings, so attacking flat out runs dry.
+pub const ATTACK_STAMINA_COST: i32 = 15;
+
+/// What one `dash` action costs. A bot with less walks instead.
+pub const DASH_STAMINA_COST: i32 = 20;
+
+/// A `dash` covers this many times the distance of a `walk`.
+pub const DASH_SPEED_FACTOR: f32 = 3.0;
+// --- Teleporters -----------------------------------------------------------
+
+/// Most teleporter pads a room's owner may place.
+pub const MAX_TELEPORTERS: usize = 8;
+
+/// Radius of a pad (the client's model, `assets/blender/teleporter.py`). A
+/// bot whose centre is this close to a pad's centre is on it, and teleports.
+pub const TELEPORTER_RADIUS: f32 = 0.9;
+
+/// Two pads' centres are at least this far apart, so pads never overlap.
+pub const TELEPORTER_SPACING: f32 = 2.5;
+
+/// What every tick with the shield up costs. A bot with less cannot raise
+/// it. More than a tick wins back, so no bot hides behind it for ever.
+pub const SHIELD_STAMINA_COST: i32 = 5;
+
+/// A bot behind its shield moves this many times the distance of a `walk`.
+pub const SHIELD_SPEED_FACTOR: f32 = 0.5;
+
 // --- Sandbox limits for untrusted Lua -------------------------------------
 
 /// Fuel a script may spend while loading (top-level code). The VM charges

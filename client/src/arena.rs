@@ -18,7 +18,7 @@ use promptnite_bindings::{sdk::Table, *};
 use crate::{
     net::Conn,
     theme::{self, PALETTE},
-    ui::Screen,
+    ui::{ArenaUi, Screen},
 };
 
 /// What is on screen this frame. Written here, read by the UI for labels.
@@ -38,8 +38,19 @@ pub struct BotView {
     pub position: Vec3,
     pub radius: f32,
     pub hp: i32,
+    /// How much of its full stamina the bot has left, `0.0..=1.0`.
+    pub stamina: f32,
     pub action: BotAction,
+    /// Set for the one tick in which the bot jumps between two teleporters:
+    /// the centres of the pad that took it and the pad it comes out of.
+    pub teleport: Option<(Vec3, Vec3)>,
 }
+
+/// A bot that a teleporter took is on the exact centre of the pad it came out
+/// of. So is one that has not moved since, which this tells apart: every jump
+/// is longer (`TELEPORTER_SPACING` less `TELEPORTER_RADIUS` in
+/// `sim/src/rules.rs`, less the step that took the bot onto the pad).
+const TELEPORT_JUMP: f32 = 0.5;
 
 /// The camera that looks at the arena (as opposed to the UI camera).
 #[derive(Component)]
@@ -67,23 +78,31 @@ const STRATEGY_VIEW: View = View {
     focus: Vec3::new(0.0, 0.0, 4.5),
 };
 
-/// Extends the arena view above the prompt without cropping the rendered scene.
+/// Fits the arena between UI bands while rendering the scene behind them.
 /// The same matrix drives rendering, culling, and world-to-screen markers.
 #[derive(Debug, Clone)]
-struct PortraitProjection {
+struct UiProjection {
     perspective: PerspectiveProjection,
     reserved: f32,
+    bottom: bool,
 }
 
-impl PortraitProjection {
+impl UiProjection {
     fn extend(&self, matrix: Mat4) -> Mat4 {
-        Mat4::from_translation(Vec3::new(0.0, -self.reserved, 0.0))
-            * Mat4::from_scale(Vec3::new(1.0, 1.0 - self.reserved, 1.0))
+        Mat4::from_translation(Vec3::new(
+            0.0,
+            if self.bottom {
+                self.reserved
+            } else {
+                -self.reserved
+            },
+            0.0,
+        )) * Mat4::from_scale(Vec3::new(1.0, 1.0 - self.reserved, 1.0))
             * matrix
     }
 }
 
-impl CameraProjection for PortraitProjection {
+impl CameraProjection for UiProjection {
     fn get_clip_from_view(&self) -> Mat4 {
         self.extend(self.perspective.get_clip_from_view())
     }
@@ -103,7 +122,12 @@ impl CameraProjection for PortraitProjection {
 
     fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
         let mut corners = self.perspective.get_frustum_corners(z_near, z_far);
-        for index in [1, 2, 5, 6] {
+        let extended = if self.bottom {
+            [0, 3, 4, 7]
+        } else {
+            [1, 2, 5, 6]
+        };
+        for index in extended {
             corners[index].y *= (1.0 + self.reserved) / (1.0 - self.reserved);
         }
         corners
@@ -160,6 +184,7 @@ pub struct BotAssets {
     tombstone: Handle<WorldAsset>,
     blade: (Handle<Mesh>, Handle<StandardMaterial>),
     slash: Handle<Mesh>,
+    shield: Handle<StandardMaterial>,
     hilt: (Handle<Mesh>, Handle<StandardMaterial>),
     stem: Handle<Mesh>,
     stem_material: Handle<StandardMaterial>,
@@ -209,8 +234,17 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                point_of_view,
-                (replay, sync_bots, swing_hands, fade_slashes, lunge, jiggle).chain(),
+                point_of_view.after(replay),
+                (
+                    replay,
+                    sync_bots,
+                    raise_shields,
+                    swing_hands,
+                    fade_slashes,
+                    lunge,
+                    jiggle,
+                )
+                    .chain(),
             ),
         );
 }
@@ -496,6 +530,12 @@ fn setup(
             materials.add(theme::DAGGER_BLADE),
         ),
         slash: meshes.add(slash_mesh()),
+        shield: materials.add(StandardMaterial {
+            base_color: theme::SHIELD,
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
         hilt: (
             meshes.add(Cuboid::new(0.7, 0.14, 0.14)),
             materials.add(theme::DAGGER_HILT),
@@ -644,7 +684,9 @@ fn jiggle(
 pub fn point_of_view(
     time: Res<Time>,
     screen: Res<Screen>,
+    ui: Res<ArenaUi>,
     mut spring: ResMut<CameraSpring>,
+    replay: Res<Replay>,
     window: Single<&Window>,
     mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
 ) {
@@ -659,6 +701,7 @@ pub fn point_of_view(
     // Only while the prompt box is open, as in `ui::draw`: nothing sent
     // yet this round, or the last try failed.
     let writing = snapshot.game.phase == Phase::Prompting
+        && !(ui.placing && crate::ui::compact_view(window.width()))
         && matches!(
             snapshot.submission_of(snapshot.me.id).map(|s| s.status),
             None | Some(SubmissionStatus::Failed)
@@ -672,10 +715,25 @@ pub fn point_of_view(
     } else {
         0.0
     };
+    let bottom = !compact
+        && window.height() < 600.0
+        && matches!(snapshot.game.phase, Phase::Fighting | Phase::Results);
+    let reserved = if bottom {
+        let reveal = if snapshot.game.phase == Phase::Results {
+            1.0
+        } else {
+            crate::ui::bot_tab_reveal(replay.phase_elapsed, 0)
+        };
+        (crate::ui::BOT_TAB_HEIGHT + crate::theme::EDGE).min((window.height() - 80.0).max(0.0))
+            * reveal
+    } else {
+        reserved
+    };
     let mut projection = if reserved > 0.0 {
-        Projection::custom(PortraitProjection {
+        Projection::custom(UiProjection {
             perspective: PerspectiveProjection::default(),
             reserved: reserved / window.height().max(1.0),
+            bottom,
         })
     } else {
         Projection::Perspective(PerspectiveProjection::default())
@@ -701,7 +759,7 @@ pub fn point_of_view(
             eye: view.eye,
             // Look slightly lower to lift the rooftop above the desktop tabs.
             focus: view.focus
-                - if matches!(snapshot.game.phase, Phase::Fighting | Phase::Results) {
+                - if !bottom && matches!(snapshot.game.phase, Phase::Fighting | Phase::Results) {
                     Vec3::Y * 4.5
                 } else {
                     Vec3::ZERO
@@ -784,6 +842,17 @@ pub fn replay(
         return;
     };
     let blend = tick.fract();
+    // Everybody starts full, so the opening frame says how much that is.
+    let opening = conn
+        .db()
+        .match_frames()
+        .iter()
+        .find(|f| f.room_id == room.id && f.tick == 0);
+    // Stamina sits beside the bots, in the same order.
+    let stamina_of = |frame: &Frame, id: u32| {
+        let at = frame.bots.iter().position(|b| b.player_id == id)?;
+        frame.stamina.as_ref()?.get(at).copied()
+    };
 
     for bot in &from.bots {
         // The later frame decides hp/action so hits land when they are shown.
@@ -791,22 +860,50 @@ pub fn replay(
             .as_ref()
             .and_then(|frame| frame.bots.iter().find(|b| b.player_id == bot.player_id))
             .unwrap_or(bot);
-        let x = bot.x + (next.x - bot.x) * blend;
-        let y = bot.y + (next.y - bot.y) * blend;
+        // Pads are a ring: the one a bot comes out of tells which it went in.
+        let pads = &snapshot.teleporters;
+        let teleport = pads
+            .iter()
+            .position(|pad| (pad.x, pad.y) == (next.x, next.y))
+            .filter(|_| (next.x - bot.x).hypot(next.y - bot.y) > TELEPORT_JUMP)
+            .map(|exit| {
+                let entry = &pads[(exit + pads.len() - 1) % pads.len()];
+                (
+                    Vec3::new(entry.x, 0.0, entry.y),
+                    Vec3::new(next.x, 0.0, next.y),
+                )
+            });
+        let jumped = teleport.is_some();
+        let (x, y) = match (jumped, blend < 0.5) {
+            // A jump is not a slide: here for half the tick, then there.
+            (true, true) => (bot.x, bot.y),
+            (true, false) => (next.x, next.y),
+            (false, _) => (
+                bot.x + (next.x - bot.x) * blend,
+                bot.y + (next.y - bot.y) * blend,
+            ),
+        };
+        let id = bot.player_id;
+        // Blended like the position, so the bar drains and fills smoothly.
+        let stamina = stamina_of(&from, id).zip(opening.as_ref().and_then(|f| stamina_of(f, id)));
+        let stamina = stamina.map_or(1.0, |(now, full)| {
+            let later = to.as_ref().and_then(|f| stamina_of(f, id)).unwrap_or(now);
+            let now = now as f32 + (later - now) as f32 * blend;
+            (now / full.max(1) as f32).clamp(0.0, 1.0)
+        });
         replay.bots.push(BotView {
-            max_hp: conn
-                .db()
-                .match_frames()
-                .iter()
-                .find(|f| f.room_id == room.id && f.tick == 0)
-                .and_then(|f| f.bots.into_iter().find(|b| b.player_id == bot.player_id))
+            max_hp: opening
+                .as_ref()
+                .and_then(|f| f.bots.iter().find(|b| b.player_id == id))
                 .map_or(room.max_hp, |b| b.hp),
             id: bot.player_id,
             // Sim (x, y) is the ground plane; Bevy's up axis is Y.
             position: Vec3::new(x, room.bot_radius, y),
             radius: room.bot_radius,
             hp: next.hp,
+            stamina,
             action: next.action,
+            teleport,
         });
     }
 }
@@ -892,6 +989,14 @@ pub fn sync_bots(
                     transform,
                     children![
                         (
+                            Bubble(id),
+                            Mesh3d(assets.mesh.clone()),
+                            MeshMaterial3d(assets.shield.clone()),
+                            Transform::from_scale(Vec3::splat(BUBBLE_SIZE)),
+                            Visibility::Hidden,
+                            bevy::light::NotShadowCaster,
+                        ),
+                        (
                             Nose(id),
                             Transform::default(),
                             Visibility::default(),
@@ -943,6 +1048,27 @@ pub fn sync_bots(
                 .id();
             spawn_antenna(&mut commands, &assets, bot, material, transform);
         }
+    }
+}
+
+/// The bubble round a live bot, shown on the ticks its shield is up.
+#[derive(Component)]
+pub struct Bubble(u32);
+
+/// In bot radii: clear of the body, inside the hand.
+const BUBBLE_SIZE: f32 = 1.4;
+
+fn raise_shields(replay: Res<Replay>, mut bubbles: Query<(&Bubble, &mut Visibility)>) {
+    for (bubble, mut visibility) in &mut bubbles {
+        let up = replay
+            .bots
+            .iter()
+            .any(|bot| bot.id == bubble.0 && bot.action == BotAction::Shield);
+        visibility.set_if_neq(if up {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
 }
 
@@ -1219,9 +1345,10 @@ mod portrait_projection_tests {
         for (width, height, reserved) in [(390.0, 844.0, 517.0), (320.0, 568.0, 385.0)] {
             let mut old = PerspectiveProjection::default();
             old.update(width, height - reserved);
-            let mut full = PortraitProjection {
+            let mut full = UiProjection {
                 perspective: PerspectiveProjection::default(),
                 reserved: reserved / height,
+                bottom: false,
             };
             full.update(width, height);
             for point in [
@@ -1246,21 +1373,54 @@ mod portrait_projection_tests {
 
     #[test]
     fn culling_corners_match_visible_full_screen_edges() {
-        let mut full = PortraitProjection {
+        let mut full = UiProjection {
             perspective: PerspectiveProjection::default(),
             reserved: 0.61,
+            bottom: false,
         };
         full.update(390.0, 844.0);
-        let corners = full.get_frustum_corners(-0.1, -1000.0);
         let edges = [
             Vec2::new(1.0, -1.0),
             Vec2::ONE,
             Vec2::new(-1.0, 1.0),
             -Vec2::ONE,
         ];
-        for (index, corner) in corners.into_iter().enumerate() {
-            let projected = full.get_clip_from_view().project_point3(corner.into());
-            assert!(projected.truncate().distance(edges[index % 4]) < 0.001);
+        for bottom in [false, true] {
+            full.bottom = bottom;
+            for (index, corner) in full
+                .get_frustum_corners(-0.1, -1000.0)
+                .into_iter()
+                .enumerate()
+            {
+                let projected = full.get_clip_from_view().project_point3(corner.into());
+                assert!(projected.truncate().distance(edges[index % 4]) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn short_landscape_arena_stays_above_bottom_dock() {
+        let (width, height, reserved) = (844.0, 390.0, 164.0);
+        let mut old = PerspectiveProjection::default();
+        old.update(width, height - reserved);
+        let mut full = UiProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: reserved / height,
+            bottom: true,
+        };
+        full.update(width, height);
+        for point in [Vec3::new(-3.0, 2.0, -30.0), Vec3::new(4.0, -3.0, -50.0)] {
+            let before = old.get_clip_from_view().project_point3(point);
+            let after = full.get_clip_from_view().project_point3(point);
+            let expected = Vec2::new(
+                (before.x + 1.0) * width / 2.0,
+                (1.0 - before.y) * (height - reserved) / 2.0,
+            );
+            let actual = Vec2::new(
+                (after.x + 1.0) * width / 2.0,
+                (1.0 - after.y) * height / 2.0,
+            );
+            assert!(expected.distance(actual) < 0.001);
         }
     }
 }

@@ -13,7 +13,7 @@ fn full_match(script: &str) -> promptnite_sim::MatchOutcome {
             script: script.to_string(),
         })
         .collect();
-    run_match(&specs, 7, MATCH_TICKS)
+    run_match(&specs, &[], 7, MATCH_TICKS)
 }
 
 #[test]
@@ -59,10 +59,13 @@ fn a_script_cannot_outgrow_the_heap_cap() {
             x: 0.0,
             y: 0.0,
             hp: 100,
+            stamina: rules::MAX_STAMINA,
+            shielding: false,
             dist: 0.0,
         },
         cooldown: 0,
         enemies: &[],
+        teleporters: &[],
     };
     for _ in 0..MATCH_TICKS {
         if bot.out_of_memory() {

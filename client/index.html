@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Phones: no zooming (the game handles every touch itself), and the
+         on-screen keyboard makes the page smaller instead of covering it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content"
+    />
     <title>promptnite</title>
     <!-- Where the client sends its logs: the agent worker's /logs route.
          Empty means nowhere. The deploy workflow fills it in. -->
@@ -18,11 +23,17 @@
         height: 100%;
         background: #121418;
         overflow: hidden;
+        overscroll-behavior: none;
       }
       /* Bevy sizes the canvas to its parent (fit_canvas_to_parent). */
       canvas {
         display: block;
         outline: none;
+        /* Touches are the game's: no scrolling, zooming or text selection. */
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
       /* iOS zooms into any focused field under 16px. bevy_egui's hidden
          keyboard input sets no font-size, so it would trigger that zoom. */
@@ -34,5 +45,34 @@
   </head>
   <body>
     <canvas id="game"></canvas>
+    <script>
+      // Keep the game the size of what is actually visible. Where the
+      // viewport setting above isn't enough (iOS), the on-screen keyboard
+      // would otherwise cover the bottom of it, or scroll it off the top.
+      const visible = window.visualViewport;
+      if (visible) {
+        const fit = () => {
+          document.body.style.height = visible.height + "px";
+          window.scrollTo(0, 0);
+        };
+        visible.addEventListener("resize", fit);
+        visible.addEventListener("scroll", fit);
+        fit();
+      }
+
+      // On a phone, typing goes to a hidden text box that egui keeps for the
+      // on-screen keyboard, and only its letters and Backspace reach the
+      // game. Hand the game the keyboard's Enter as well, or the join screen
+      // can't be sent from the keyboard and a prompt can't get a new line.
+      const game = document.getElementById("game");
+      for (const type of ["keydown", "keyup"]) {
+        document.addEventListener(type, (event) => {
+          if (event.key !== "Enter" || event.target.id !== "egui_text_agent") return;
+          game.dispatchEvent(
+            new KeyboardEvent(type, { key: "Enter", code: "Enter", bubbles: true }),
+          );
+        });
+      }
+    </script>
   </body>
 </html>

@@ -76,6 +76,7 @@ struct Sandbox {
     owner: bool,
     match_secs: u32,
     house_bot: bool,
+    teleporters: Vec<Teleporter>,
     help: bool,
     style_editor: bool,
 }
@@ -98,6 +99,11 @@ pub fn plugin(app: &mut App) {
         owner: true,
         match_secs: 30,
         house_bot: true,
+        teleporters: [(-6.0, -5.0), (6.0, 5.0), (-5.5, 6.0)]
+            .into_iter()
+            .zip(1..)
+            .map(|((x, y), number)| pad(number, x, y))
+            .collect(),
         help: false,
         style_editor: false,
     })
@@ -232,6 +238,16 @@ fn take_shots(
     }
 }
 
+fn pad(number: u32, x: f32, y: f32) -> Teleporter {
+    Teleporter {
+        key: number as u64,
+        room_id: ROOM,
+        number,
+        x,
+        y,
+    }
+}
+
 /// What the UI asked for, played along with.
 fn perform(mut actions: MessageReader<Action>, mut sandbox: ResMut<Sandbox>, time: Res<Time>) {
     let now = time.elapsed_secs_f64();
@@ -245,6 +261,18 @@ fn perform(mut actions: MessageReader<Action>, mut sandbox: ResMut<Sandbox>, tim
             } => {
                 sandbox.match_secs = *match_secs;
                 sandbox.house_bot = *house_bot;
+            }
+            Action::AddTeleporter { x, y } => {
+                // The smallest number not in use, like the server.
+                let pads = &mut sandbox.teleporters;
+                let number = (1..)
+                    .find(|n| pads.iter().all(|pad| pad.number != *n))
+                    .unwrap();
+                pads.push(pad(number, *x, *y));
+                pads.sort_by_key(|pad| pad.number);
+            }
+            Action::RemoveTeleporter(number) => {
+                sandbox.teleporters.retain(|pad| pad.number != *number);
             }
         }
     }
@@ -362,6 +390,7 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
             message: "bot:7: attempt to index a nil value (local 'target')".into(),
         }],
         me: players[0].clone(),
+        teleporters: sandbox.teleporters.clone(),
         prompt_refusal: None,
         players,
         submissions,
@@ -424,6 +453,8 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             BotAction::Walk
         } else if beat < 0.12 {
             BotAction::Attack
+        } else if i % 2 == 1 {
+            BotAction::Shield
         } else {
             BotAction::Miss
         };
@@ -434,7 +465,21 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             position: Vec3::new(radius * angle.cos(), 0.5, radius * angle.sin()),
             radius: 0.5,
             hp: hp as i32,
+            // Drained by the brawl, a different amount for everybody.
+            stamina: if hp > 0.0 && t > WALK_IN {
+                0.55 + 0.4 * (t * 0.9 + i as f32 * 1.7).sin()
+            } else {
+                1.0
+            },
             action,
+            // Nobody really jumps in the made-up fight, but every few seconds
+            // the first two pads flare as if somebody had.
+            teleport: match &sandbox.teleporters[..] {
+                [from, to, ..] if id == ME && !counting_down && (t % 3.0) > 2.9 => {
+                    Some((Vec3::new(from.x, 0.0, from.y), Vec3::new(to.x, 0.0, to.y)))
+                }
+                _ => None,
+            },
         });
     }
 }
@@ -450,7 +495,7 @@ fn controls(
         return Ok(());
     }
     let now = time.elapsed_secs_f64();
-    if crate::ui::compact_view(ctx.viewport_rect().width()) {
+    if crate::ui::compact_view(ctx.viewport_rect().width()) && !ctx.text_edit_focused() {
         // Touch-accessible stage picker for the phone testing harness.
         egui::Area::new(egui::Id::new("sandbox_stages"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -112.0))

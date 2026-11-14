@@ -24,10 +24,16 @@ The first player in creates the room and is its **owner**. The owner sets:
 - **House bot**: whether the built-in reference bot fights in every match.
   On by default, so a room can be played alone. It takes an edge no player
   is using, so with four players it sits out.
+- **Teleporters**: up to eight pads, anywhere on the roof a bot can stand,
+  at least 2.5 units apart. The owner places and removes them by clicking
+  the roof while everybody is prompting. Each pad shows its number, which is
+  what prompts and scripts call it, and which decides where it leads: to the
+  pad with the next number. None by default.
 
 Changes apply from the next match. The owner stays the owner while anybody is
 in the room, even while they are away themselves. A room everybody has left
-goes to the next player who enters it, with the settings back to default.
+goes to the next player who enters it, with the settings back to default and
+the teleporters gone.
 
 ## Round loop
 
@@ -52,24 +58,40 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | Action | Lua | Effect |
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
-| attack | `{ action = "attack" }` | Punch the nearest enemy in range |
+| dash | `{ action = "dash", dx = 1, dy = 0 }` | A step three times as long, for stamina |
+| shield | `{ action = "shield", dx = 1, dy = 0 }` | Block every hit this tick, for stamina; the step is optional and half as long |
+| attack | `{ action = "attack" }` | Punch the nearest enemy in range, for stamina |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
 One action per tick: a bot cannot walk and punch at once.
 
-The original sketch also lists **run**. It is not implemented yet; see
-"Open questions".
+**Teleporting** is not an action: it happens to a bot. The pads form a ring
+by number. A bot whose centre comes within a pad's radius (0.9) is taken, in
+that same tick, to the exact centre of the pad with the next number: 1 leads
+to 2, 2 to 3, and the highest number back to the lowest. A removed pad leaves
+a gap in the numbers, which the ring skips. It makes no difference how the bot
+got there, so a bot can shove an enemy onto a pad. This is part of moving:
+punches land after it, where the bots have ended up. The bot that came out is
+standing on a pad again, and that pad leaves it alone until it has stepped
+off: from the next tick on it is free to walk away, and walking back on takes
+it one pad further. A lone pad leads nowhere.
+
+Dash is the original sketch's **run**; stamina is what it costs.
 
 ### The script contract
 
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, cooldown }
-  -- state.enemies { { id, x, y, hp, dist }, ... }   living enemies only
+  -- state.me      { id, x, y, hp, stamina, shielding, cooldown }
+  -- state.enemies { { id, x, y, hp, stamina, shielding, dist }, ... }   living enemies only
+  -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
-  --                 attack_damage, attack_cooldown, max_hp }
+  --                 attack_damage, attack_cooldown, max_hp, max_stamina,
+  --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
+  --                 dash_speed, shield_stamina_cost, shield_speed,
+  --                 teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -85,6 +107,18 @@ Globals persist between ticks, so a script can remember things.
 - 10 ticks per second. The time limit is the room's match length.
 - 100 hp, a punch does 10 damage within 1.5 units, then a 5 tick cooldown.
 - Walking speed 3 units per second.
+- 100 stamina, the same for every build. A swing costs 15, hit or miss, and
+  a dash 20; a dash covers three times a walk's distance. Every tick a bot
+  spends none (walking, standing still, waiting out its cooldown) gives 2
+  back. A bot that cannot pay for a swing does not swing, and one that cannot
+  pay for a dash walks. Swinging flat out costs more than it wins back, so a
+  bot that never lets up runs dry and then swings less often.
+- A shield is up for the tick a bot asks for it and costs 5 stamina each
+  time. No hit lands on a bot behind one (the attacker still pays for the
+  swing). The bot may move while it holds it, at half its walking speed. With
+  less than 5 stamina the shield stays down and the action is a walk. Held
+  without a break it lasts 2 seconds from full. `shielding` says whether a
+  bot's shield was up on the tick before.
 - Attacks in the same tick land simultaneously, so a double knockout is
   possible.
 - Last bot standing wins. At the time limit the bot with the most hp wins; a
@@ -116,7 +150,11 @@ there are no panels.
   (they joined while a match was already running). The house bot is listed
   too while it is part of the game.
 - **Room settings**: top left, for the room's owner only and only during
-  prompting: the controls for match length and house bot.
+  prompting: the controls for match length and house bot, and the switch
+  that turns clicks on the roof into placing and removing teleporters.
+- **Teleporters**: a dark pad with glowing segments and its number, modelled
+  in Blender (`assets/blender/teleporter.py`). When a pad takes a bot, a flame
+  shoots up from it and from the pad the bot comes out of.
 - **Arena overlays**: name and health bar above each bot, the big countdown
   and result text, and (top left, during and after a fight) scripts that broke.
 
@@ -205,8 +243,6 @@ Decisions worth knowing about:
 
 ## Open questions
 
-- **Run**: the sketch lists it. Needs a cost (stamina? cannot attack while
-  running?) or it simply replaces walk.
 - **Prompt deadline**: a round currently waits for every online player. One
   idle player stalls the room. Add a timer and a default bot?
 - **Flooding**: the model-call budget is shared, so somebody who spends it

@@ -1,8 +1,12 @@
--- Reference bot: walk toward the nearest enemy and punch when in range.
+-- Reference bot: go for the nearest enemy, dashing while it is far away, and
+-- punch when in range.
 --
 -- The game calls tick(state) once per simulation step and expects one action:
 --   { action = "walk", dx = <number>, dy = <number> }   direction, any length
---   { action = "attack" }                               hit nearest enemy in range
+--   { action = "dash", dx = <number>, dy = <number> }   a faster step, costs stamina
+--   { action = "shield", dx = <number>, dy = <number> } block every hit this tick, costs stamina;
+--                                                       the direction is optional, a slow step
+--   { action = "attack" }                               hit nearest enemy in range, costs stamina
 --   { action = "idle" }                                 (or return nil)
 --
 -- Globals persist between ticks, so a script may keep its own memory.
@@ -23,5 +27,10 @@ function tick(state)
     return { action = "attack" }
   end
 
-  return { action = "walk", dx = target.x - state.me.x, dy = target.y - state.me.y }
+  local step = { action = "walk", dx = target.x - state.me.x, dy = target.y - state.me.y }
+  -- Dash to close a long gap, but arrive with stamina left to fight on.
+  if target.dist > 3 * state.rules.attack_range and state.me.stamina >= 60 then
+    step.action = "dash"
+  end
+  return step
 end

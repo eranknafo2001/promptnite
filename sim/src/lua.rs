@@ -27,7 +27,10 @@ use piccolo::{
     StashedExecutor, StashedFunction, Table, Value, constant::Constant, opcode::Operation, stdlib,
 };
 
-use crate::{rules, sim::Action};
+use crate::{
+    rules,
+    sim::{Action, Teleporter},
+};
 
 /// What a bot can see when it decides its action.
 pub struct BotView<'a> {
@@ -38,6 +41,8 @@ pub struct BotView<'a> {
     pub cooldown: u32,
     /// Living enemies only.
     pub enemies: &'a [Seen],
+    /// Sorted by id.
+    pub teleporters: &'a [Teleporter],
 }
 
 #[derive(Clone, Copy)]
@@ -47,6 +52,9 @@ pub struct Seen {
     pub x: f32,
     pub y: f32,
     pub hp: i32,
+    pub stamina: i32,
+    /// Whether its shield was up on the last tick.
+    pub shielding: bool,
     /// Distance from the observing bot (0 for `me`).
     pub dist: f32,
 }
@@ -352,6 +360,21 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
     }
     set(ctx, state, "enemies", enemies);
 
+    let teleporters = Table::new(&ctx);
+    for (i, pad) in view.teleporters.iter().enumerate() {
+        let row = Table::new(&ctx);
+        set(ctx, row, "id", pad.id as i64);
+        set(ctx, row, "x", pad.x as f64);
+        set(ctx, row, "y", pad.y as f64);
+        let dist = ((pad.x - view.me.x).powi(2) + (pad.y - view.me.y).powi(2)).sqrt();
+        set(ctx, row, "dist", dist as f64);
+        if let Some(exit) = crate::sim::exit_pad(view.teleporters, i) {
+            set(ctx, row, "to", exit.id as i64);
+        }
+        let _ = teleporters.set(ctx, (i + 1) as i64, row);
+    }
+    set(ctx, state, "teleporters", teleporters);
+
     let arena = Table::new(&ctx);
     set(ctx, arena, "half_size", rules::ARENA_HALF_SIZE as f64);
     set(ctx, state, "arena", arena);
@@ -369,6 +392,34 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         view.me.stats.attack_cooldown as i64,
     );
     set(ctx, r, "max_hp", view.me.stats.max_hp as i64);
+    set(ctx, r, "max_stamina", rules::MAX_STAMINA as i64);
+    set(ctx, r, "stamina_regen", rules::STAMINA_REGEN as i64);
+    set(
+        ctx,
+        r,
+        "attack_stamina_cost",
+        rules::ATTACK_STAMINA_COST as i64,
+    );
+    set(ctx, r, "dash_stamina_cost", rules::DASH_STAMINA_COST as i64);
+    set(
+        ctx,
+        r,
+        "dash_speed",
+        (view.me.stats.walk_speed * rules::DASH_SPEED_FACTOR) as f64,
+    );
+    set(
+        ctx,
+        r,
+        "shield_stamina_cost",
+        rules::SHIELD_STAMINA_COST as i64,
+    );
+    set(
+        ctx,
+        r,
+        "shield_speed",
+        (view.me.stats.walk_speed * rules::SHIELD_SPEED_FACTOR) as f64,
+    );
+    set(ctx, r, "teleporter_radius", rules::TELEPORTER_RADIUS as f64);
     set(ctx, state, "rules", r);
 
     state
@@ -380,6 +431,8 @@ fn seen_table<'gc>(ctx: Context<'gc>, seen: &Seen) -> Table<'gc> {
     set(ctx, table, "x", seen.x as f64);
     set(ctx, table, "y", seen.y as f64);
     set(ctx, table, "hp", seen.hp as i64);
+    set(ctx, table, "stamina", seen.stamina as i64);
+    set(ctx, table, "shielding", seen.shielding);
     set(ctx, table, "max_hp", seen.stats.max_hp as i64);
     set(ctx, table, "walk_speed", seen.stats.walk_speed as f64);
     set(ctx, table, "attack_range", seen.stats.attack_range as f64);
@@ -428,20 +481,24 @@ fn parse_action<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Result<Action, Str
     match name.as_bytes() {
         b"idle" => Ok(Action::Idle),
         b"attack" => Ok(Action::Attack),
-        b"walk" => {
+        kind @ (b"walk" | b"dash" | b"shield") => {
             let axis = |key: &'static str| {
                 args.and_then(|table| table.get(ctx, key).to_number())
                     .unwrap_or(0.0) as f32
             };
             let (dx, dy) = (axis("dx"), axis("dy"));
-            if dx.is_finite() && dy.is_finite() {
-                Ok(Action::Walk { dx, dy })
+            if !dx.is_finite() || !dy.is_finite() {
+                Err("walk, dash and shield directions must be finite numbers".into())
+            } else if kind == b"dash" {
+                Ok(Action::Dash { dx, dy })
+            } else if kind == b"shield" {
+                Ok(Action::Shield { dx, dy })
             } else {
-                Err("walk direction must be finite numbers".into())
+                Ok(Action::Walk { dx, dy })
             }
         }
         _ => Err(format!(
-            "unknown action \"{}\" (expected walk, attack or idle)",
+            "unknown action \"{}\" (expected walk, dash, shield, attack or idle)",
             name.to_str_lossy()
         )),
     }

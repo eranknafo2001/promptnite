@@ -15,7 +15,9 @@ pub mod rules;
 mod sim;
 
 pub use lua::{LuaBot, validate_script};
-pub use sim::{Action, ActionKind, BotSnapshot, BotSpec, Fault, Frame, MatchOutcome, run_match};
+pub use sim::{
+    Action, ActionKind, BotSnapshot, BotSpec, Fault, Frame, MatchOutcome, Teleporter, run_match,
+};
 
 /// A script that always works. The server uses it when no LLM is configured,
 /// and it doubles as the reference example we show the agent.
