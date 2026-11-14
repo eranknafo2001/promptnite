@@ -2,6 +2,8 @@
 //! cartoon puff, chunks fly off and the camera shakes. The camera also sways
 //! gently all the time. Hand-rolled particles, no physics.
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 use promptnite_bindings::BotAction;
 
@@ -15,7 +17,14 @@ pub fn plugin(app: &mut App) {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (deaths, puffs, debris, camera.after(arena::point_of_view))
+            (
+                deaths,
+                dash_dust,
+                dust,
+                puffs,
+                debris,
+                camera.after(arena::point_of_view),
+            )
                 .chain()
                 .after(arena::sync_bots),
         );
@@ -26,6 +35,7 @@ struct FxAssets {
     sphere: Handle<Mesh>,
     cube: Handle<Mesh>,
     dead: Handle<StandardMaterial>,
+    dust: Handle<StandardMaterial>,
 }
 
 #[derive(Resource, Default)]
@@ -34,6 +44,9 @@ struct FxState {
     dead: Vec<(u32, bool)>,
     /// Counts blasts, so each one looks a little different.
     blasts: u32,
+    dashing: HashSet<u32>,
+    dash_bursts: u32,
+    replay_elapsed: f32,
     /// Camera shake in 0..=1; it moves by trauma², so it dies down sharply.
     trauma: f32,
     /// The camera's steady transform, and what we last wrote over it.
@@ -48,6 +61,14 @@ struct Puff {
     size: f32,
     velocity: Vec3,
     color: Color,
+}
+
+#[derive(Component)]
+struct Dust {
+    age: f32,
+    life: f32,
+    size: f32,
+    velocity: Vec3,
 }
 
 #[derive(Component)]
@@ -67,6 +88,12 @@ fn setup(
         sphere: meshes.add(Sphere::new(1.0)),
         cube: meshes.add(Cuboid::from_length(1.0)),
         dead: materials.add(theme::BOT_DEAD),
+        dust: materials.add(StandardMaterial {
+            base_color: theme::FX_DASH_DUST,
+            unlit: true,
+            perceptual_roughness: 1.0,
+            ..default()
+        }),
     });
 }
 
@@ -169,6 +196,78 @@ fn deaths(
         }
     }
     state.dead = now;
+}
+
+/// One clustered puff when a bot enters its dash action. No trail or distance tracking.
+fn dash_dust(
+    mut commands: Commands,
+    replay: Res<Replay>,
+    assets: Res<FxAssets>,
+    mut state: ResMut<FxState>,
+) {
+    if replay.phase_elapsed < state.replay_elapsed {
+        state.dashing.clear();
+    }
+    state.replay_elapsed = replay.phase_elapsed;
+    for bot in &replay.bots {
+        if bot.action != BotAction::Dash || state.dashing.contains(&bot.id) {
+            continue;
+        }
+        state.dash_bursts = state.dash_bursts.wrapping_add(1);
+        let seed = bot
+            .id
+            .wrapping_mul(7919)
+            .wrapping_add(state.dash_bursts.wrapping_mul(37));
+        let foot = bot.position.with_y(0.0);
+        // Five overlapping white spheres bloom together at floor contact,
+        // then gently spread and disappear while the bot moves away.
+        for lobe in 0..5 {
+            let s = seed.wrapping_add(lobe * 7);
+            let direction = around(s);
+            let size = bot.radius * (0.30 + 0.225 * rand(s.wrapping_add(1)));
+            let offset = direction * bot.radius * (0.1 + 0.22 * rand(s.wrapping_add(2)));
+            commands.spawn((
+                Dust {
+                    age: 0.0,
+                    life: 0.28 + 0.12 * rand(s.wrapping_add(3)),
+                    size,
+                    velocity: direction * bot.radius * (0.4 + 0.4 * rand(s.wrapping_add(4)))
+                        + Vec3::Y * bot.radius * (0.4 + 0.4 * rand(s.wrapping_add(5))),
+                },
+                Mesh3d(assets.sphere.clone()),
+                MeshMaterial3d(assets.dust.clone()),
+                Transform::from_translation(foot + offset + Vec3::Y * size * 0.65)
+                    .with_scale(Vec3::ZERO),
+            ));
+        }
+    }
+    state.dashing = replay
+        .bots
+        .iter()
+        .filter(|bot| bot.action == BotAction::Dash)
+        .map(|bot| bot.id)
+        .collect();
+}
+
+/// Briefly bloom, then shrink away, preserving a round silhouette.
+fn dust(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut particles: Query<(Entity, &mut Dust, &mut Transform)>,
+) {
+    for (entity, mut puff, mut transform) in &mut particles {
+        puff.age += time.delta_secs();
+        let t = puff.age / puff.life;
+        if t >= 1.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        transform.translation += puff.velocity * time.delta_secs();
+        let bloom = (t / 0.16).min(1.0);
+        let shrink = 1.0 - ((t - 0.3) / 0.7).clamp(0.0, 1.0);
+        let scale = puff.size * (1.0 - (1.0 - bloom).powi(3)) * shrink;
+        transform.scale = Vec3::splat(scale);
+    }
 }
 
 /// Pop up fast, then shrink and fade out.

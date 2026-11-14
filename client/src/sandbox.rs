@@ -438,7 +438,10 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             2 => 0.0,
             _ => std::f32::consts::PI,
         };
-        let walked = (moving / WALK_IN).clamp(0.0, 1.0);
+        // Two short dash bursts on the way in. Integrate their extra speed
+        // so the demo path stays continuous and dust can follow the feet.
+        let dash_extra = (moving - 0.5).clamp(0.0, 0.35) + (moving - 1.5).clamp(0.0, 0.35);
+        let walked = ((moving + dash_extra * 2.6) / (WALK_IN + 1.82)).clamp(0.0, 1.0);
         let closing = walked * walked * (3.0 - 2.0 * walked);
         let radius = 8.5 + (2.2 - 8.5) * closing;
         let spin = if i % 2 == 0 { 0.35 } else { -0.35 };
@@ -449,6 +452,8 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             BotAction::Dead
         } else if counting_down {
             BotAction::Idle
+        } else if (0.5..0.85).contains(&t) || (1.5..1.85).contains(&t) {
+            BotAction::Dash
         } else if t < WALK_IN || beat >= 0.2 {
             BotAction::Walk
         } else if beat < 0.12 {
