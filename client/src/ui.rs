@@ -1380,7 +1380,15 @@ fn teleporters(
     if !placing || ctx.is_pointer_over_egui() {
         return;
     }
-    let Some(cursor) = ctx.pointer_hover_pos() else {
+    // A finger is gone from the screen in the very frame its tap counts, so
+    // a click is taken where the pointer last was.
+    let clicked = ctx.input(|input| input.pointer.primary_clicked());
+    let cursor = if clicked {
+        ctx.pointer_interact_pos()
+    } else {
+        ctx.pointer_hover_pos()
+    };
+    let Some(cursor) = cursor else {
         return;
     };
     let Ok(ray) = camera.viewport_to_world(camera_transform, Vec2::new(cursor.x, cursor.y)) else {
@@ -1445,7 +1453,7 @@ fn teleporters(
         egui::CursorIcon::NotAllowed
     });
     if let Some(action) = action
-        && ctx.input(|input| input.pointer.primary_clicked())
+        && clicked
     {
         actions.write(action);
     }
