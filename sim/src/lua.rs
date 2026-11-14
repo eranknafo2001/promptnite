@@ -52,6 +52,7 @@ pub struct Seen {
     pub x: f32,
     pub y: f32,
     pub hp: i32,
+    pub stamina: i32,
     /// Distance from the observing bot (0 for `me`).
     pub dist: f32,
 }
@@ -389,6 +390,21 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         view.me.stats.attack_cooldown as i64,
     );
     set(ctx, r, "max_hp", view.me.stats.max_hp as i64);
+    set(ctx, r, "max_stamina", rules::MAX_STAMINA as i64);
+    set(ctx, r, "stamina_regen", rules::STAMINA_REGEN as i64);
+    set(
+        ctx,
+        r,
+        "attack_stamina_cost",
+        rules::ATTACK_STAMINA_COST as i64,
+    );
+    set(ctx, r, "dash_stamina_cost", rules::DASH_STAMINA_COST as i64);
+    set(
+        ctx,
+        r,
+        "dash_speed",
+        (view.me.stats.walk_speed * rules::DASH_SPEED_FACTOR) as f64,
+    );
     set(ctx, r, "teleporter_radius", rules::TELEPORTER_RADIUS as f64);
     set(ctx, state, "rules", r);
 
@@ -401,6 +417,7 @@ fn seen_table<'gc>(ctx: Context<'gc>, seen: &Seen) -> Table<'gc> {
     set(ctx, table, "x", seen.x as f64);
     set(ctx, table, "y", seen.y as f64);
     set(ctx, table, "hp", seen.hp as i64);
+    set(ctx, table, "stamina", seen.stamina as i64);
     set(ctx, table, "max_hp", seen.stats.max_hp as i64);
     set(ctx, table, "walk_speed", seen.stats.walk_speed as f64);
     set(ctx, table, "attack_range", seen.stats.attack_range as f64);
@@ -449,20 +466,22 @@ fn parse_action<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Result<Action, Str
     match name.as_bytes() {
         b"idle" => Ok(Action::Idle),
         b"attack" => Ok(Action::Attack),
-        b"walk" => {
+        kind @ (b"walk" | b"dash") => {
             let axis = |key: &'static str| {
                 args.and_then(|table| table.get(ctx, key).to_number())
                     .unwrap_or(0.0) as f32
             };
             let (dx, dy) = (axis("dx"), axis("dy"));
-            if dx.is_finite() && dy.is_finite() {
-                Ok(Action::Walk { dx, dy })
+            if !dx.is_finite() || !dy.is_finite() {
+                Err("walk and dash directions must be finite numbers".into())
+            } else if kind == b"dash" {
+                Ok(Action::Dash { dx, dy })
             } else {
-                Err("walk direction must be finite numbers".into())
+                Ok(Action::Walk { dx, dy })
             }
         }
         _ => Err(format!(
-            "unknown action \"{}\" (expected walk, attack or idle)",
+            "unknown action \"{}\" (expected walk, dash, attack or idle)",
             name.to_str_lossy()
         )),
     }

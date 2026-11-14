@@ -39,6 +39,11 @@ pub enum Action {
         dx: f32,
         dy: f32,
     },
+    /// A faster, costlier step; the direction works like `Walk`'s.
+    Dash {
+        dx: f32,
+        dy: f32,
+    },
     Attack,
 }
 
@@ -47,9 +52,10 @@ pub enum Action {
 pub enum ActionKind {
     Idle,
     Walk,
+    Dash,
     /// Swung and hit somebody.
     Attack,
-    /// Swung at nothing (out of range or on cooldown).
+    /// Swung at nothing (out of range, on cooldown or out of stamina).
     Miss,
     Dead,
 }
@@ -60,6 +66,7 @@ pub struct BotSnapshot {
     pub x: f32,
     pub y: f32,
     pub hp: i32,
+    pub stamina: i32,
     pub action: ActionKind,
 }
 
@@ -93,6 +100,7 @@ struct Bot {
     x: f32,
     y: f32,
     hp: i32,
+    stamina: i32,
     cooldown: u32,
     /// Whether a pad takes the bot. Not after a jump, until it has stepped
     /// off the pad it came out of: otherwise it would never stop jumping.
@@ -200,6 +208,7 @@ pub fn run_match(
                 x: dx * spawn_dist,
                 y: dy * spawn_dist,
                 hp: stats.max_hp,
+                stamina: rules::MAX_STAMINA,
                 cooldown: 0,
                 teleports: true,
                 faulted: lua.is_none(),
@@ -232,25 +241,34 @@ pub fn run_match(
             })
             .collect();
 
+        // Who paid stamina this tick. Everybody else wins some back at the end.
+        let mut spent = vec![false; bots.len()];
+
         // 2. Movement.
 
         let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
-            if !bot.alive() {
+            let (dx, dy, dash) = match actions[i] {
+                Action::Walk { dx, dy } => (dx, dy, false),
+                Action::Dash { dx, dy } => (dx, dy, true),
+                _ => continue,
+            };
+            let len = (dx * dx + dy * dy).sqrt();
+            if !bot.alive() || len <= 1e-6 {
                 continue;
             }
-            let step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
-            match actions[i] {
-                Action::Walk { dx, dy } => {
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len > 1e-6 {
-                        bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
-                        bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
-                        did[i] = ActionKind::Walk;
-                    }
-                }
-                Action::Idle | Action::Attack => {}
+            let mut step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
+            // A dash the bot cannot pay for is a walk.
+            if dash && bot.stamina >= rules::DASH_STAMINA_COST {
+                bot.stamina -= rules::DASH_STAMINA_COST;
+                spent[i] = true;
+                step *= rules::DASH_SPEED_FACTOR;
+                did[i] = ActionKind::Dash;
+            } else {
+                did[i] = ActionKind::Walk;
             }
+            bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
+            bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
         }
         separate(&mut bots, limit);
         // After the shoving, so a bot can be pushed onto a pad. Part of
@@ -263,7 +281,12 @@ pub fn run_match(
             if !bots[i].alive() {
                 continue;
             }
-            if actions[i] == Action::Attack && bots[i].cooldown == 0 {
+            if actions[i] == Action::Attack
+                && bots[i].cooldown == 0
+                && bots[i].stamina >= rules::ATTACK_STAMINA_COST
+            {
+                bots[i].stamina -= rules::ATTACK_STAMINA_COST;
+                spent[i] = true;
                 bots[i].cooldown = bots[i].stats.attack_cooldown;
                 match nearest_enemy(&bots, i) {
                     Some((target, dist)) if dist <= bots[i].stats.attack_range => {
@@ -285,6 +308,13 @@ pub fn run_match(
                 if !bot.alive() {
                     did[i] = ActionKind::Dead;
                 }
+            }
+        }
+
+        // 4. Stamina comes back on a tick that cost none.
+        for (i, bot) in bots.iter_mut().enumerate() {
+            if bot.alive() && !spent[i] {
+                bot.stamina = (bot.stamina + rules::STAMINA_REGEN).min(rules::MAX_STAMINA);
             }
         }
 
@@ -321,6 +351,7 @@ fn decide(
             x: other.x,
             y: other.y,
             hp: other.hp,
+            stamina: other.stamina,
             dist: distance(me, other),
         })
         .collect();
@@ -333,6 +364,7 @@ fn decide(
             x: me.x,
             y: me.y,
             hp: me.hp,
+            stamina: me.stamina,
             dist: 0.0,
         },
         cooldown: me.cooldown,
@@ -386,6 +418,7 @@ fn snapshot(tick: u32, bots: &[Bot], did: &[ActionKind]) -> Frame {
                 x: bot.x,
                 y: bot.y,
                 hp: bot.hp,
+                stamina: bot.stamina,
                 action,
             })
             .collect(),
@@ -585,6 +618,69 @@ mod tests {
         // Never in range (spawned on opposite edges), so nobody takes damage.
         assert_eq!(outcome.frames.last().unwrap().bots[1].hp, rules::MAX_HP);
         assert_eq!(outcome.frames[1].bots[0].action, ActionKind::Miss);
+    }
+
+    fn stamina_of(outcome: &MatchOutcome) -> Vec<i32> {
+        outcome.frames.iter().map(|f| f.bots[0].stamina).collect()
+    }
+
+    #[test]
+    fn swings_cost_stamina_and_other_ticks_win_it_back() {
+        let puncher = r#"function tick() return "attack" end"#;
+        let outcome = super::run_match(&[spec(1, puncher), spec(2, IDLE)], &[], 0, 400);
+        assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
+        let stamina = stamina_of(&outcome);
+        // One swing, then the cooldown is spent recovering.
+        let after_swing = rules::MAX_STAMINA - rules::ATTACK_STAMINA_COST;
+        assert_eq!(
+            stamina[..3],
+            [
+                rules::MAX_STAMINA,
+                after_swing,
+                after_swing + rules::STAMINA_REGEN
+            ]
+        );
+        // Swinging flat out runs dry, and never goes into debt.
+        assert!(stamina.iter().all(|s| (0..=rules::MAX_STAMINA).contains(s)));
+        assert!(stamina.iter().any(|s| *s < rules::ATTACK_STAMINA_COST));
+        // A tired bot swings less often than its cooldown allows.
+        let swings = |frames: &[Frame]| {
+            frames
+                .windows(2)
+                .filter(|w| w[1].bots[0].stamina < w[0].bots[0].stamina)
+                .count()
+        };
+        assert!(swings(&outcome.frames[300..]) < swings(&outcome.frames[..100]));
+    }
+
+    #[test]
+    fn dash_is_a_fast_walk_until_stamina_runs_out() {
+        let script = r#"
+            function tick(state)
+              assert(state.me.stamina <= state.rules.max_stamina)
+              assert(state.enemies[1].stamina == state.rules.max_stamina)
+              assert(state.rules.dash_speed > state.rules.walk_speed)
+              return { action = "dash", dx = -1, dy = 0 }
+            end
+        "#;
+        let outcome = super::run_match(&[spec(1, script), spec(2, IDLE)], &[], 0, 8);
+        assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
+        let walk = rules::WALK_SPEED / rules::TICKS_PER_SEC as f32;
+        let dashes = (rules::MAX_STAMINA / rules::DASH_STAMINA_COST) as usize;
+        for (i, pair) in outcome.frames.windows(2).enumerate() {
+            let (before, after) = (&pair[0].bots[0], &pair[1].bots[0]);
+            let moved = before.x - after.x;
+            if i < dashes {
+                assert_eq!(after.action, ActionKind::Dash);
+                assert!((moved - walk * rules::DASH_SPEED_FACTOR).abs() < 1e-3);
+                assert_eq!(after.stamina, before.stamina - rules::DASH_STAMINA_COST);
+            } else if i == dashes {
+                // Out of stamina: the dash is a walk, which wins some back.
+                assert_eq!(after.action, ActionKind::Walk);
+                assert!((moved - walk).abs() < 1e-3);
+                assert_eq!(after.stamina, before.stamina + rules::STAMINA_REGEN);
+            }
+        }
     }
 
     #[test]

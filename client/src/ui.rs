@@ -28,7 +28,7 @@ use promptnite_bindings::*;
 
 use crate::{
     arena::{ArenaCamera, BotView, Replay},
-    teleporter,
+    clipboard, teleporter,
     theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
@@ -97,6 +97,10 @@ struct Form {
     name: String,
     room: String,
     prompt: String,
+    /// The prompt we last sent, and the last one that came back as a bot.
+    /// Sending that one again keeps the bot (the server skips the agent).
+    sent: String,
+    built: String,
     /// Whether `name` was already filled in from an earlier visit.
     prefilled: bool,
     /// The text box we last moved the keyboard focus to, so each screen
@@ -149,7 +153,7 @@ fn setup(mut commands: Commands, mut settings: ResMut<EguiGlobalSettings>) {
     ));
 }
 
-fn is_mac() -> bool {
+pub fn is_mac() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
         web_sys::window()
@@ -293,6 +297,10 @@ fn draw(
         room_settings(ctx, snapshot, dim, &mut form.placing, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
+    // Whatever the phase: the last bot ready starts the countdown at once.
+    if submission.is_some_and(|s| s.status == SubmissionStatus::Ready) && form.built != form.sent {
+        form.built = form.sent.clone();
+    }
     match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
@@ -400,7 +408,8 @@ fn join_screen(
 
 /// One single-line box of the join screen.
 fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) -> egui::Response {
-    ui.add(
+    let field = clipboard::show(
+        ui,
         egui::TextEdit::singleline(text)
             .hint_text(hint.to_owned())
             .char_limit(limit)
@@ -409,7 +418,12 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
             .horizontal_align(egui::Align::Center)
             .desired_width(f32::INFINITY)
             .frame(theme::field_frame()),
-    )
+    );
+    // On the desktop, text pasted from several lines keeps its line breaks.
+    if text.contains(['\r', '\n']) {
+        *text = text.replace(['\r', '\n'], " ");
+    }
+    field
 }
 
 /// Second screen, every round: the prompt, in a column down the right side
@@ -472,7 +486,12 @@ fn prompt_box(
                         ui.label(small(format!("Round {}", snapshot.game.round)));
                     });
                 });
-                ui.label(small("Tell your agent how your bot should fight."));
+                let unchanged = !form.built.is_empty() && form.prompt.trim() == form.built;
+                ui.label(small(if unchanged {
+                    "Send it as it is to keep the same bot, or change it for a new one."
+                } else {
+                    "Tell your agent how your bot should fight."
+                }));
                 ui.add_space(8.0);
                 // A prompt the server would not take at all comes before one
                 // whose agent failed.
@@ -493,13 +512,14 @@ fn prompt_box(
                 let footer_height = 28.0;
                 let text_height =
                     ui.available_height() - footer_height - ui.spacing().item_spacing.y;
-                theme::field_frame().show(ui, |ui| {
+                let field_box = theme::field_frame().show(ui, |ui| {
                     let text_height = text_height - 16.0;
                     egui::ScrollArea::vertical()
                         .max_height(text_height)
                         .auto_shrink(false)
                         .show(ui, |ui| {
-                            let field = ui.add(
+                            let field = clipboard::show(
+                                ui,
                                 egui::TextEdit::multiline(&mut form.prompt)
                                     .hint_text("Rush the weakest bot, then circle the edge…")
                                     .char_limit(MAX_PROMPT_CHARS)
@@ -517,6 +537,16 @@ fn prompt_box(
                             }
                         });
                 });
+                if dice_button(ui, field_box.response.rect) {
+                    let seed = (ui.input(|input| input.time) * 1000.0) as u32;
+                    let mut pick = (crate::fx::rand(seed) * EXAMPLE_PROMPTS.len() as f32) as usize
+                        % EXAMPLE_PROMPTS.len();
+                    // Never roll the prompt that is already there.
+                    if form.prompt == EXAMPLE_PROMPTS[pick] {
+                        pick = (pick + 1) % EXAMPLE_PROMPTS.len();
+                    }
+                    form.prompt = EXAMPLE_PROMPTS[pick].to_string();
+                }
 
                 let mut clicked = false;
                 ui.allocate_ui_with_layout(
@@ -543,9 +573,79 @@ fn prompt_box(
                 let prompt = form.prompt.trim();
                 if (shortcut || clicked) && !prompt.is_empty() {
                     actions.write(Action::SubmitPrompt(prompt.to_string()));
+                    form.sent = prompt.to_string();
                 }
             });
         });
+}
+
+/// What the dice in the prompt box fills it with.
+const EXAMPLE_PROMPTS: [&str; 5] = [
+    "Walk to the enemy with the lowest hp and punch it whenever your cooldown is ready. \
+     When it dies, pick the next lowest.",
+    "Hit and run: walk in and punch the nearest enemy, then back straight away from it \
+     until your cooldown is ready again.",
+    "Stay in a corner and wait. Punch any enemy that comes within range. \
+     In the last 10 seconds, chase whoever has the least hp.",
+    "Keep away from every enemy until only one is left or 20 seconds have passed, \
+     then go after the closest one and punch nonstop.",
+    "Punch the nearest enemy while your hp is above 40. Below 40, run to the far side \
+     of the arena from the closest enemy and only fight back if it catches you.",
+];
+
+/// A round button with a die on it, in the bottom right corner of `field`,
+/// styled like the help button. It goes in a child ui so it floats over the
+/// text without taking space from it. True when clicked.
+fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
+    const SIZE: f32 = 24.0;
+    let rect = egui::Rect::from_min_size(
+        field.right_bottom() - egui::Vec2::splat(SIZE + 8.0),
+        egui::Vec2::splat(SIZE),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    // A shade darker than the help button, so it shows on the grey field.
+    let widgets = &mut child.visuals_mut().widgets;
+    for state in [
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+    ] {
+        let [r, g, b, a] = state.weak_bg_fill.to_array();
+        state.weak_bg_fill = egui::Color32::from_rgba_premultiplied(
+            r.saturating_sub(40),
+            g.saturating_sub(40),
+            b.saturating_sub(40),
+            a,
+        );
+    }
+    let response = child
+        .add(
+            egui::Button::new("")
+                .corner_radius(theme::PILL_RADIUS)
+                .min_size(egui::Vec2::splat(SIZE)),
+        )
+        .on_hover_text("Roll a random prompt");
+    // The same colour the "?" gets.
+    let ink = ui.visuals().widgets.style(&response).text_color();
+    let centre = response.rect.center();
+    let painter = ui.painter();
+    painter.rect_stroke(
+        egui::Rect::from_center_size(centre, egui::Vec2::splat(12.0)),
+        2.5,
+        egui::Stroke::new(1.5, ink),
+        egui::StrokeKind::Middle,
+    );
+    // The five face.
+    for (x, y) in [
+        (-1.0, -1.0),
+        (1.0, -1.0),
+        (0.0, 0.0),
+        (-1.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        painter.circle_filled(centre + egui::vec2(x, y) * 3.0, 1.2, ink);
+    }
+    response.clicked()
 }
 
 /// The room's settings, top left. Only the owner gets them, and only while
@@ -652,8 +752,8 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 ));
                 ui.add_space(10.0);
                 for line in [
-                    "Where it is, its hp, and how long until it can punch again",
-                    "Where every living enemy is, their hp and how far away they are",
+                    "Where it is, its hp and stamina, and how long until it can punch again",
+                    "Where every living enemy is, their hp, stamina and how far away they are",
                     "Where the numbered teleporters are and where each one leads",
                     "The arena's size, the time, and the rules: speed, punch range, damage",
                     "Anything it chose to remember from earlier in the match",
@@ -662,10 +762,10 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 }
                 ui.add_space(4.0);
                 ui.label(small(
-                    "It can walk, punch the nearest enemy in range, or wait: one per tick. \
-                     A teleporter takes any bot that gets onto it to the next number, \
-                     and the last one back to 1. \
-                     It can't see other prompts or when enemies can punch next.",
+                    "It can walk, dash, punch the nearest enemy in range, or wait: one per tick. \
+                     Dashes and punches cost stamina, which comes back on ticks it does \
+                     neither. A teleporter takes any bot that gets onto it to the next \
+                     number, and the last one back to 1. It can't see other prompts or when enemies can punch next.",
                 ));
 
                 ui.add_space(14.0);
@@ -1129,7 +1229,8 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
 }
 
 /// One panel down the left side, vertically centred, with a row per bot in
-/// the match: colour dot, name and health, the health bar underneath.
+/// the match: colour dot, name and health, the health bar underneath and the
+/// stamina bar under that.
 ///
 /// Painted directly, like the roster, so the panel doesn't jump a frame when
 /// a name changes length.
@@ -1141,11 +1242,13 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
     const WIDTH: f32 = 350.0;
     const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
     const HEADING: f32 = 30.0;
-    const ROW: f32 = 78.0;
+    const ROW: f32 = 86.0;
     /// The last row ends at its bar, not at the next row.
-    const LAST_ROW: f32 = 66.0;
+    const LAST_ROW: f32 = 74.0;
     const DOT: f32 = 10.0;
     const BAR: f32 = 6.0;
+    /// The stamina bar, right under the health bar and thinner.
+    const STAMINA_BAR: f32 = 4.0;
 
     if replay.bots.is_empty() {
         return;
@@ -1204,6 +1307,18 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
             painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
         }
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), top + 32.0),
+            egui::vec2(inner.width(), STAMINA_BAR),
+        );
+        painter.rect_filled(bar, STAMINA_BAR / 2.0, theme::HP_TRACK);
+        if alive && bot.stamina > 0.0 {
+            let filled = egui::Rect::from_min_size(
+                bar.min,
+                egui::vec2(bar.width() * bot.stamina, STAMINA_BAR),
+            );
+            painter.rect_filled(filled, STAMINA_BAR / 2.0, theme::STAMINA);
+        }
         let points = snapshot
             .submission_of(bot.id)
             .and_then(|s| s.build.as_deref());
@@ -1214,7 +1329,7 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
         {
             stat_strip(
                 painter,
-                egui::pos2(inner.left(), top + 50.0),
+                egui::pos2(inner.left(), top + 58.0),
                 inner.width(),
                 points,
                 ink,

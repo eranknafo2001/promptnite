@@ -9,11 +9,13 @@
 //!   fx.rs     explosions, debris and camera shake
 //!   teleporter.rs  the pads bots jump between
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
+//!   clipboard.rs  copy, cut and paste in the text boxes
 //!   theme.rs  colours, type sizes and boxes: the look in one place
 //!   sandbox.rs  every screen with made-up data and no server (`--sandbox`)
 //!   logs.rs   sends warnings, errors and panics to the central log
 
 mod arena;
+mod clipboard;
 mod fx;
 mod logs;
 mod net;
@@ -22,11 +24,7 @@ mod teleporter;
 mod theme;
 mod ui;
 
-use bevy::{
-    asset::{AssetMetaCheck, AssetPlugin},
-    log::LogPlugin,
-    prelude::*,
-};
+use bevy::{asset::AssetMetaCheck, log::LogPlugin, prelude::*};
 
 fn main() {
     let sandbox = sandbox::enabled();
@@ -50,15 +48,16 @@ fn main() {
                     }),
                     ..default()
                 })
-                // No asset here has a `.meta` file. Asking for one anyway
-                // breaks every model on a web server that answers a missing
-                // file with its front page, as `trunk serve` does.
-                .set(AssetPlugin {
-                    meta_check: AssetMetaCheck::Never,
-                    ..default()
-                })
                 .set(LogPlugin {
                     custom_layer: logs::layer,
+                    ..default()
+                })
+                // The assets ship without `.meta` files, so never ask for one.
+                // Asking costs a request per asset in the browser, and a server
+                // that answers a missing file with a page instead of a 404
+                // (`trunk serve` does) makes Bevy reject the model.
+                .set(AssetPlugin {
+                    meta_check: AssetMetaCheck::Never,
                     ..default()
                 }),
         )
@@ -67,6 +66,7 @@ fn main() {
             fx::plugin,
             teleporter::plugin,
             ui::plugin,
+            clipboard::plugin,
             logs::plugin,
         ));
     if sandbox {

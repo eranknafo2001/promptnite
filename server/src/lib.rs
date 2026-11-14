@@ -47,6 +47,8 @@ use spacetimedb::{
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
 const RESULTS: Duration = Duration::from_secs(8);
+/// The round a new room starts in, and one everybody left starts over from.
+const FIRST_ROUND: u32 = 1;
 const MAX_PROMPT_CHARS: usize = 2_000;
 const MAX_NAME_CHARS: usize = 24;
 const MAX_ROOM_CHARS: usize = 24;
@@ -228,6 +230,10 @@ pub struct Submission {
 /// A player's prompt and the Lua their agent wrote. Private, and on purpose
 /// not exposed through any view: players never see the script, not even their
 /// own. Clients only get the `submission` status.
+///
+/// The row outlives its round (until the player sends another prompt or
+/// changes rooms), so the same prompt sent again gets the same script back
+/// without a model call. `round` says which round it last entered.
 #[table(accessor = bot_script)]
 pub struct BotScript {
     #[primary_key]
@@ -292,6 +298,9 @@ pub enum BotAction {
     /// Swung at nothing.
     Miss,
     Dead,
+    // New kinds go last: the hosted database only takes an enum that grew at
+    // its end without a manual migration.
+    Dash,
 }
 
 #[derive(SpacetimeType, Clone, Debug)]
@@ -316,6 +325,12 @@ pub struct Frame {
     room_id: u32,
     tick: u32,
     bots: Vec<BotFrame>,
+    /// Each bot's stamina, in the order of `bots`. A column of its own with a
+    /// default, because a field added to `BotFrame` would change the type of
+    /// `bots`, which needs a manual migration. `None` only in rows written
+    /// before the column existed.
+    #[default(None)]
+    stamina: Option<Vec<i32>>,
 }
 
 /// Room in the high half, tick in the low half.
@@ -477,6 +492,17 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
                 .room_id()
                 .filter(room.id)
                 .any(|other| other.online && other.id != player.id);
+            // Calling `join` again while still in the room is not leaving it.
+            let here = player.online && player.room_id == room.id;
+            // A running match plays on: whoever drops out of it and comes
+            // back, or walks in on it, watches the rest.
+            let fighting = matches!(room.phase, Phase::Countdown | Phase::Fighting);
+            let room = if deserted && !here && !fighting {
+                // Nobody was here to see the last match: start over.
+                reset_room(ctx, room)
+            } else {
+                room
+            };
             if deserted && room.owner != player.id {
                 // Everybody left: to the newcomer this is a new room.
                 ctx.db.teleporter().room_id().delete(room.id);
@@ -496,7 +522,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
             owner: player.id,
             match_secs: rules::DEFAULT_MATCH_SECS,
             house_bot: true,
-            round: 1,
+            round: FIRST_ROUND,
             phase: Phase::Prompting,
             phase_ends_at: None,
             match_ticks: 0,
@@ -690,6 +716,17 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         }
     }
 
+    // The same prompt as last time keeps the bot it got: no model call. The
+    // script is checked again because the rules may have changed under it.
+    let kept = ctx
+        .db
+        .bot_script()
+        .player_id()
+        .find(player.id)
+        .filter(|last| last.prompt == prompt && !last.script.is_empty())
+        .map(|last| last.script)
+        .filter(|script| sim::validate_script(script).is_ok());
+
     clear_entry(ctx, player.id);
     ctx.db.submission().insert(Submission {
         player_id: player.id,
@@ -707,6 +744,15 @@ pub fn submit_prompt(ctx: &ReducerContext, prompt: String) -> Result<(), String>
         script: String::new(),
     });
 
+    if let Some(script) = kept {
+        emit(
+            ctx,
+            Level::Info,
+            "script reused",
+            json!({ "player_id": player.id, "room_id": room.id, "round": room.round }),
+        );
+        return accept_script(ctx, player.id, script);
+    }
     if agent_url(ctx).is_none() {
         // No agent configured: everyone gets the example bot, so the game
         // loop can be tried without a worker or an API key.
@@ -1123,9 +1169,11 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
                         sim::ActionKind::Attack => BotAction::Attack,
                         sim::ActionKind::Miss => BotAction::Miss,
                         sim::ActionKind::Dead => BotAction::Dead,
+                        sim::ActionKind::Dash => BotAction::Dash,
                     },
                 })
                 .collect(),
+            stamina: Some(frame.bots.iter().map(|bot| bot.stamina).collect()),
         });
     }
     let faults = outcome.faults.len();
@@ -1240,8 +1288,11 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
                 .filter(room_id)
                 .map(|row| row.player_id)
                 .collect();
+            // The scripts stay: sending the same prompt again next round
+            // reuses the bot instead of asking the agent for a new one.
             for player_id in entries {
-                clear_entry(ctx, player_id);
+                ctx.db.submission().player_id().delete(player_id);
+                ctx.db.agent_job().player_id().delete(player_id);
             }
             ctx.db.room().id().update(Room {
                 round: room.round + 1,
@@ -1536,7 +1587,47 @@ fn owner_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
     Ok((player, room))
 }
 
-/// Remove everything a player submitted this round.
+/// Put a room everybody left back to how a new one starts: first round,
+/// waiting for prompts, no match to show (so no tombstones from a fight the
+/// newcomer never saw). The settings and the kept scripts are not touched.
+fn reset_room(ctx: &ReducerContext, room: Room) -> Room {
+    let room_id = room.id;
+    // A timer of the old match must not move the new first round along.
+    let timers: Vec<u64> = ctx
+        .db
+        .phase_timer()
+        .iter()
+        .filter(|timer| timer.room_id == room_id)
+        .map(|timer| timer.scheduled_id)
+        .collect();
+    for id in timers {
+        ctx.db.phase_timer().scheduled_id().delete(id);
+    }
+    // Nor may an old entry count as ready in it.
+    let entries: Vec<u32> = ctx
+        .db
+        .submission()
+        .room_id()
+        .filter(room_id)
+        .map(|row| row.player_id)
+        .collect();
+    for player_id in entries {
+        ctx.db.submission().player_id().delete(player_id);
+        ctx.db.agent_job().player_id().delete(player_id);
+    }
+    ctx.db.frame().room_id().delete(room_id);
+    ctx.db.match_fault().room_id().delete(room_id);
+    ctx.db.room().id().update(Room {
+        round: FIRST_ROUND,
+        phase: Phase::Prompting,
+        phase_ends_at: None,
+        match_ticks: 0,
+        winner: None,
+        ..room
+    })
+}
+
+/// Remove everything a player submitted, the kept script included.
 fn clear_entry(ctx: &ReducerContext, player_id: u32) {
     ctx.db.submission().player_id().delete(player_id);
     ctx.db.bot_script().player_id().delete(player_id);

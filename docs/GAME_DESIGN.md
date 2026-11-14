@@ -47,6 +47,10 @@ the teleporters gone.
    intervene.
 5. **Results** — the winner is shown, then the next round starts at step 1.
 
+A player who sends the same prompt again, unchanged, keeps the bot they had:
+the module reuses the script and the agent is not asked. Any change to the
+prompt, or moving to another room, gets a new script.
+
 ## What a bot can do
 
 Kept deliberately small for now. Each simulation tick the script returns one of:
@@ -54,7 +58,8 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | Action | Lua | Effect |
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
-| attack | `{ action = "attack" }` | Punch the nearest enemy in range |
+| dash | `{ action = "dash", dx = 1, dy = 0 }` | A step three times as long, for stamina |
+| attack | `{ action = "attack" }` | Punch the nearest enemy in range, for stamina |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
 One action per tick: a bot cannot walk and punch at once.
@@ -70,21 +75,21 @@ standing on a pad again, and that pad leaves it alone until it has stepped
 off: from the next tick on it is free to walk away, and walking back on takes
 it one pad further. A lone pad leads nowhere.
 
-The original sketch also lists **run**. It is not implemented yet; see
-"Open questions".
+Dash is the original sketch's **run**; stamina is what it costs.
 
 ### The script contract
 
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, cooldown }
-  -- state.enemies { { id, x, y, hp, dist }, ... }   living enemies only
+  -- state.me      { id, x, y, hp, stamina, cooldown }
+  -- state.enemies { { id, x, y, hp, stamina, dist }, ... }   living enemies only
   -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
-  --                 attack_damage, attack_cooldown, max_hp,
-  --                 teleporter_radius }
+  --                 attack_damage, attack_cooldown, max_hp, max_stamina,
+  --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
+  --                 dash_speed, teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -100,6 +105,12 @@ Globals persist between ticks, so a script can remember things.
 - 10 ticks per second. The time limit is the room's match length.
 - 100 hp, a punch does 10 damage within 1.5 units, then a 5 tick cooldown.
 - Walking speed 3 units per second.
+- 100 stamina, the same for every build. A swing costs 15, hit or miss, and
+  a dash 20; a dash covers three times a walk's distance. Every tick a bot
+  spends none (walking, standing still, waiting out its cooldown) gives 2
+  back. A bot that cannot pay for a swing does not swing, and one that cannot
+  pay for a dash walks. Swinging flat out costs more than it wins back, so a
+  bot that never lets up runs dry and then swings less often.
 - Attacks in the same tick land simultaneously, so a double knockout is
   possible.
 - Last bot standing wins. At the time limit the bot with the most hp wins; a
@@ -224,8 +235,6 @@ Decisions worth knowing about:
 
 ## Open questions
 
-- **Run**: the sketch lists it. Needs a cost (stamina? cannot attack while
-  running?) or it simply replaces walk.
 - **Prompt deadline**: a round currently waits for every online player. One
   idle player stalls the room. Add a timer and a default bot?
 - **Flooding**: the model-call budget is shared, so somebody who spends it
