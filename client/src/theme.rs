@@ -292,6 +292,19 @@ pub fn pill(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         .show(ui, content);
 }
 
+/// A button big enough for a fingertip: ink with white text, or greyed
+/// out while there is nothing for it to do yet (`ready` is false).
+pub fn button(text: &str, size: f32, ready: bool) -> egui::Button<'static> {
+    let (fill, ink) = if ready {
+        (INK, PANEL_FILL)
+    } else {
+        (HP_TRACK, INK_MUTED)
+    };
+    egui::Button::new(egui::RichText::new(text).font(bold(size)).color(ink))
+        .fill(fill)
+        .corner_radius(PILL_RADIUS)
+}
+
 pub fn small(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
         .size(SIZE_SMALL)
