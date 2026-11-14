@@ -62,7 +62,6 @@ fn a_script_cannot_outgrow_the_heap_cap() {
             dist: 0.0,
         },
         cooldown: 0,
-        teleport_cooldown: 0,
         enemies: &[],
         teleporters: &[],
     };

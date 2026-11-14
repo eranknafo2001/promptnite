@@ -3,8 +3,6 @@
 -- The game calls tick(state) once per simulation step and expects one action:
 --   { action = "walk", dx = <number>, dy = <number> }   direction, any length
 --   { action = "attack" }                               hit nearest enemy in range
---   { action = "teleport", to = <id> }                  walk to the nearest other
---                                                       teleporter, come out of <id>
 --   { action = "idle" }                                 (or return nil)
 --
 -- Globals persist between ticks, so a script may keep its own memory.

@@ -323,8 +323,8 @@ fn frame_key(room_id: u32, tick: u32) -> u64 {
     (room_id as u64) << 32 | tick as u64
 }
 
-/// A pad the room's owner put on the arena floor. A bot standing on one can
-/// jump to any other. Private, served by `room_teleporters`.
+/// A pad the room's owner put on the arena floor. A bot that gets onto one
+/// comes out of the next by number. Private, served by `room_teleporters`.
 #[table(accessor = teleporter)]
 pub struct Teleporter {
     /// `frame_key(room_id, number)`.

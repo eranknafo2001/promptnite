@@ -27,7 +27,8 @@ The first player in creates the room and is its **owner**. The owner sets:
 - **Teleporters**: up to eight pads, anywhere on the roof a bot can stand,
   at least 2.5 units apart. The owner places and removes them by clicking
   the roof while everybody is prompting. Each pad shows its number, which is
-  what prompts and scripts call it. None by default.
+  what prompts and scripts call it, and which decides where it leads: to the
+  pad with the next number. None by default.
 
 Changes apply from the next match. The owner stays the owner while anybody is
 in the room, even while they are away themselves. A room everybody has left
@@ -54,19 +55,19 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
 | attack | `{ action = "attack" }` | Punch the nearest enemy in range |
-| teleport | `{ action = "teleport", to = 2 }` | One step towards a teleporter; on reaching it, jump to pad `to` |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
 One action per tick: a bot cannot walk and punch at once.
 
-**Teleporting** takes a pad to walk to and a pad to come out of. The bot walks
-straight to the nearest pad other than `to` (or to the pad named with
-`from = <id>`). The step that reaches the pad lands on its exact position, and
-in that same tick the bot appears at the exact position of pad `to`; from the
-next tick on it is free to walk off. After a jump a bot cannot teleport again
-for 30 ticks (it can still walk onto a pad and wait there), so nobody escapes
-for ever by hopping between two pads. Any bot can use any pad. Naming a pad
-that does not exist costs the bot its turn, like any script error.
+**Teleporting** is not an action: it happens to a bot. The pads form a ring
+by number. A bot whose centre comes within a pad's radius (0.9) is taken, in
+that same tick, to the exact centre of the pad with the next number: 1 leads
+to 2, 2 to 3, and the highest number back to the lowest. A removed pad leaves
+a gap in the numbers, which the ring skips. It makes no difference how the bot
+got there, so a bot can shove an enemy onto a pad. The bot that came out is
+standing on a pad again, and that pad leaves it alone until it has stepped
+off: from the next tick on it is free to walk away, and walking back on takes
+it one pad further. A lone pad leads nowhere.
 
 The original sketch also lists **run**. It is not implemented yet; see
 "Open questions".
@@ -76,13 +77,13 @@ The original sketch also lists **run**. It is not implemented yet; see
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, cooldown, teleport_cooldown }
+  -- state.me      { id, x, y, hp, cooldown }
   -- state.enemies { { id, x, y, hp, dist }, ... }   living enemies only
-  -- state.teleporters { { id, x, y, dist }, ... }   may be empty
+  -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
   --                 attack_damage, attack_cooldown, max_hp,
-  --                 teleport_cooldown }
+  --                 teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -132,8 +133,8 @@ there are no panels.
   prompting: the controls for match length and house bot, and the switch
   that turns clicks on the roof into placing and removing teleporters.
 - **Teleporters**: a dark pad with glowing segments and its number, modelled
-  in Blender (`assets/blender/teleporter.py`). When a bot jumps, a flame
-  shoots up from the pad it left and the pad it came out of.
+  in Blender (`assets/blender/teleporter.py`). When a pad takes a bot, a flame
+  shoots up from it and from the pad the bot comes out of.
 - **Arena overlays**: name and health bar above each bot, the big countdown
   and result text, and (top left, during and after a fight) scripts that broke.
 

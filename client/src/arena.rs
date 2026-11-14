@@ -38,15 +38,15 @@ pub struct BotView {
     pub hp: i32,
     pub action: BotAction,
     /// Set for the one tick in which the bot jumps between two teleporters:
-    /// the points on the floor it leaves from and comes out at.
+    /// the centres of the pad that took it and the pad it comes out of.
     pub teleport: Option<(Vec3, Vec3)>,
 }
 
-/// Further than a bot gets in one tick on foot, even with a shove from
-/// another bot, and less than the gap between any two teleporters
-/// (`TELEPORTER_SPACING` in `sim/src/rules.rs`): a bot that moved this far
-/// between two frames jumped.
-const TELEPORT_JUMP: f32 = 1.5;
+/// A bot that a teleporter took is on the exact centre of the pad it came out
+/// of. So is one that has not moved since, which this tells apart: every jump
+/// is longer (`TELEPORTER_SPACING` less `TELEPORTER_RADIUS` in
+/// `sim/src/rules.rs`, less the step that took the bot onto the pad).
+const TELEPORT_JUMP: f32 = 0.5;
 
 /// The camera that looks at the arena (as opposed to the UI camera).
 #[derive(Component)]
@@ -709,7 +709,20 @@ pub fn replay(
             .as_ref()
             .and_then(|frame| frame.bots.iter().find(|b| b.player_id == bot.player_id))
             .unwrap_or(bot);
-        let jumped = (next.x - bot.x).hypot(next.y - bot.y) > TELEPORT_JUMP;
+        // Pads are a ring: the one a bot comes out of tells which it went in.
+        let pads = &snapshot.teleporters;
+        let teleport = pads
+            .iter()
+            .position(|pad| (pad.x, pad.y) == (next.x, next.y))
+            .filter(|_| (next.x - bot.x).hypot(next.y - bot.y) > TELEPORT_JUMP)
+            .map(|exit| {
+                let entry = &pads[(exit + pads.len() - 1) % pads.len()];
+                (
+                    Vec3::new(entry.x, 0.0, entry.y),
+                    Vec3::new(next.x, 0.0, next.y),
+                )
+            });
+        let jumped = teleport.is_some();
         let (x, y) = match (jumped, blend < 0.5) {
             // A jump is not a slide: here for half the tick, then there.
             (true, true) => (bot.x, bot.y),
@@ -733,8 +746,7 @@ pub fn replay(
             radius: room.bot_radius,
             hp: next.hp,
             action: next.action,
-            teleport: jumped
-                .then(|| (Vec3::new(bot.x, 0.0, bot.y), Vec3::new(next.x, 0.0, next.y))),
+            teleport,
         });
     }
 }

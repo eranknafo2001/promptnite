@@ -654,7 +654,7 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 for line in [
                     "Where it is, its hp, and how long until it can punch again",
                     "Where every living enemy is, their hp and how far away they are",
-                    "Where the numbered teleporters are, if the room has any",
+                    "Where the numbered teleporters are and where each one leads",
                     "The arena's size, the time, and the rules: speed, punch range, damage",
                     "Anything it chose to remember from earlier in the match",
                 ] {
@@ -662,8 +662,9 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 }
                 ui.add_space(4.0);
                 ui.label(small(
-                    "It can walk, punch the nearest enemy in range, head for a teleporter \
-                     to jump to another, or wait: one per tick. \
+                    "It can walk, punch the nearest enemy in range, or wait: one per tick. \
+                     A teleporter takes any bot that gets onto it to the next number, \
+                     and the last one back to 1. \
                      It can't see other prompts or when enemies can punch next.",
                 ));
 
