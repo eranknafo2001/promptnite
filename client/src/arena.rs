@@ -84,6 +84,40 @@ const COMPACT_STRATEGY_VIEW: View = View {
     focus: Vec3::ZERO,
 };
 
+/// Placing teleporters: nearly straight down and as close as the roof
+/// allows, so a fingertip can pick a spot on it. Which way the eye is from
+/// the focus, as (outward, up, to the right).
+const PLACING_DIRECTION: Vec3 = Vec3::new(0.3, 1.0, 0.0);
+/// What has to stay in view around the centre of the roof, in metres: the
+/// roof and a little air.
+const PLACING_REACH: f32 = ARENA_HALF_SIZE + 2.5;
+/// Share of a narrow window's height, from the top, that the room's
+/// settings cover while placing (`ui::room_settings`).
+const PLACING_COVERED: f32 = 0.3;
+
+/// The placing view from behind edge `edge`, as world (eye, focus), for a
+/// window of `size` and a camera with a vertical field of view of `fov`.
+fn placing_view(edge: u32, size: Vec2, fov: f32) -> (Vec3, Vec3) {
+    let aspect = size.x / size.y.max(1.0);
+    let covered = if size.x < crate::ui::COMPACT_WIDTH {
+        PLACING_COVERED
+    } else {
+        0.0
+    };
+    // How much ground a metre of distance shows up and down the window.
+    let spread = (fov / 2.0).tan();
+    // Far enough for the roof to fit across the window, and down what the
+    // settings leave of it.
+    let distance =
+        (PLACING_REACH / (spread * aspect)).max(PLACING_REACH / (spread * (1.0 - covered)));
+    let outward = outward(edge);
+    // Look past the roof, so it sits in the middle of the part left free.
+    let focus = -outward * (covered * distance * spread);
+    let direction = PLACING_DIRECTION.normalize();
+    let eye = focus + (outward * direction.x + Vec3::Y * direction.y) * distance;
+    (eye, focus)
+}
+
 /// The narrowest window (width over height) both views were composed for.
 /// The camera's field of view is vertical, so anything narrower would cut
 /// the arena's sides off.
@@ -642,16 +676,18 @@ fn jiggle(
 }
 
 /// Everybody watches the arena from behind the edge their own bot starts at:
-/// lifted into the strategy view while writing a prompt, the fight view the
-/// rest of the time. The camera springs between the two, a quick
-/// snap that overshoots a touch and settles.
+/// lifted into the strategy view while writing a prompt, moved in on the roof
+/// while placing teleporters, the fight view the rest of the time. The camera
+/// springs between them, a quick snap that overshoots a touch and settles.
 pub fn point_of_view(
     time: Res<Time>,
     screen: Res<Screen>,
+    placing: Res<crate::ui::Placing>,
     mut spring: ResMut<CameraSpring>,
     window: Single<&Window>,
-    mut camera: Single<&mut Transform, With<ArenaCamera>>,
+    camera: Single<(&mut Transform, &Projection), With<ArenaCamera>>,
 ) {
+    let (mut camera, projection) = camera.into_inner();
     // Stiffness, and damping just under critical for the overshoot.
     const STIFFNESS: f32 = 70.0;
     const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
@@ -660,7 +696,7 @@ pub fn point_of_view(
     let Screen::Room(snapshot) = &*screen else {
         // Before the first room the camera only has to fit the window.
         if spring.at.is_none() {
-            **camera = camera_transform(0, size);
+            *camera = camera_transform(0, size);
         }
         return;
     };
@@ -676,7 +712,12 @@ pub fn point_of_view(
         (true, false) => &STRATEGY_VIEW,
         (false, _) => &FIGHT_VIEW,
     };
-    let (eye, focus) = place(view, snapshot.me.edge, size);
+    let (eye, focus) = match projection {
+        Projection::Perspective(lens) if placing.0 => {
+            placing_view(snapshot.me.edge, size, lens.fov)
+        }
+        _ => place(view, snapshot.me.edge, size),
+    };
     let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
     // A long frame (a hitch, a hidden tab) must not fling the camera.
     let dt = time.delta_secs().min(1.0 / 30.0);
@@ -690,7 +731,7 @@ pub fn point_of_view(
     }
     spring.at = Some((at, focus_at));
     spring.velocity = (v_eye, v_focus);
-    **camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
+    *camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
 }
 
 /// Decide which tick to show and blend the frames around it. Without a

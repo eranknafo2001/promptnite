@@ -131,14 +131,19 @@ struct Form {
     mac: bool,
     /// The prompt help popup is open.
     help: bool,
-    /// The owner is placing teleporters: clicks on the roof add and remove
-    /// pads.
-    placing: bool,
+    /// The fonts and the look were handed to egui (once, on the first frame).
+    fonts_set: bool,
     /// A phone or tablet: buttons instead of keyboard shortcuts, and no
     /// focus on a text box before the player taps it (that would bring the
     /// on-screen keyboard up over the game every round).
     touch: bool,
 }
+
+/// The owner is placing teleporters: clicks on the roof add and remove pads.
+/// The prompt steps aside meanwhile and the camera moves in on the roof
+/// (`arena::point_of_view`).
+#[derive(Resource, Default, PartialEq)]
+pub struct Placing(pub bool);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -150,6 +155,7 @@ enum Field {
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin::default())
         .add_message::<Action>()
+        .init_resource::<Placing>()
         .insert_resource(Form {
             mac: is_mac(),
             touch: is_touch(),
@@ -285,21 +291,21 @@ impl Snapshot {
 fn draw(
     mut contexts: EguiContexts,
     mut form: ResMut<Form>,
+    mut placing: ResMut<Placing>,
     screen: Res<Screen>,
     mut actions: MessageWriter<Action>,
     replay: Res<Replay>,
     camera: Single<(&Camera, &GlobalTransform), With<ArenaCamera>>,
-    mut fonts_set: Local<bool>,
 ) -> Result {
     let ctx = &*contexts.ctx_mut()?;
-    if !*fonts_set {
+    if !form.fonts_set {
         theme::set_fonts(ctx);
         // Light widgets (buttons, checkboxes) to sit on the white panels.
         ctx.set_visuals(egui::Visuals::light());
         // No fade at the ends of scroll areas: egui paints it in a grey, not
         // in the white of the panel.
         ctx.all_styles_mut(|style| style.spacing.scroll.fade.strength = 0.0);
-        *fonts_set = true;
+        form.fonts_set = true;
     }
     if !theme::fonts_ready(ctx) {
         return Ok(());
@@ -319,20 +325,17 @@ fn draw(
         )
     };
 
-    let snapshot = match &*screen {
-        Screen::Connecting(uri) => {
-            centred(format!("Connecting to {uri} …"));
-            return Ok(());
+    let Screen::Room(snapshot) = &*screen else {
+        placing.set_if_neq(Placing(false));
+        match &*screen {
+            Screen::Connecting(uri) => centred(format!("Connecting to {uri} …")),
+            Screen::Entering => centred("Entering the room…".into()),
+            Screen::Join { known_name, error } => {
+                join_screen(ctx, screen_rect, known_name, error, &mut form, &mut actions);
+            }
+            Screen::Room(_) => {}
         }
-        Screen::Entering => {
-            centred("Entering the room…".into());
-            return Ok(());
-        }
-        Screen::Join { known_name, error } => {
-            join_screen(ctx, screen_rect, known_name, error, &mut form, &mut actions);
-            return Ok(());
-        }
-        Screen::Room(snapshot) => snapshot,
+        return Ok(());
     };
     let screen = screen_rect;
 
@@ -355,12 +358,12 @@ fn draw(
     let (camera, camera_transform) = *camera;
     // Only the owner moves the pads, and only while the next match is still
     // to be set up.
-    form.placing &= prompting && snapshot.i_own_the_room() && !form.help;
-    if form.placing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-        form.placing = false;
+    let mut place = placing.0 && prompting && snapshot.i_own_the_room() && !form.help;
+    if place && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        place = false;
     }
     let view = (camera, camera_transform);
-    teleporters(ctx, &background, snapshot, view, form.placing, &mut actions);
+    teleporters(ctx, &background, snapshot, view, place, &mut actions);
     bot_markers(&background, &replay, camera, camera_transform);
     let banner = banner(&background, screen, snapshot, &replay);
     let clock = match_timer(&background, screen, game, &replay);
@@ -371,32 +374,30 @@ fn draw(
     // strip says who is who during the match.
     // On a short phone the owner's settings and the prompt need the room
     // the list would take.
-    let crowded =
-        compact && writing && snapshot.i_own_the_room() && screen.height() < ROSTER_MIN_HEIGHT;
+    // Nor while placing teleporters: the roof gets the room instead.
+    let crowded = compact
+        && snapshot.i_own_the_room()
+        && (place || (writing && screen.height() < ROSTER_MIN_HEIGHT));
     let roster = (!typing && !crowded && (!compact || prompting))
         .then(|| roster(&background, screen, snapshot, &replay, compact));
     let mut top = roster.map_or(screen.top(), |roster| roster.bottom()) + EDGE;
 
     if prompting && snapshot.i_own_the_room() && !typing {
         let below = compact.then_some(top);
-        let settings = room_settings(
-            ctx,
-            screen,
-            below,
-            snapshot,
-            dim,
-            &mut form.placing,
-            &mut actions,
-        );
+        let settings = room_settings(ctx, screen, below, snapshot, dim, &mut place, &mut actions);
         if compact {
             top = settings.bottom() + EDGE;
         }
     }
+    placing.set_if_neq(Placing(place));
     // Whatever the phase: the last bot ready starts the countdown at once.
     if submission.is_some_and(|s| s.status == SubmissionStatus::Ready) && form.built != form.sent {
         form.built = form.sent.clone();
     }
     let status = match (game.phase, submission.map(|s| s.status)) {
+        // The prompt is out of the way while the owner places teleporters:
+        // the roof takes its room (what is typed so far stays in `form`).
+        (Phase::Prompting, None | Some(SubmissionStatus::Failed)) if place => None,
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
             let outer = if typing {
@@ -453,7 +454,7 @@ fn draw(
     let status = status.map(|(busy, text)| status_line(ctx, screen, busy, &text));
     if compact {
         // The prompt sheet covers where the strip goes.
-        if !writing {
+        if !writing && !place {
             let bottom = status.map_or(screen.bottom(), |status| status.top()) - EDGE;
             if matches!(game.phase, Phase::Prompting | Phase::Countdown) {
                 let outer = egui::Rect::from_min_max(
@@ -910,8 +911,9 @@ fn room_settings(
                     }
                 });
                 if *placing {
-                    ui.label(small("Click the roof to add a pad."));
-                    ui.label(small("Click a pad to take it away."));
+                    let click = if is_touch() { "Tap" } else { "Click" };
+                    ui.label(small(format!("{click} the roof to add a pad.")));
+                    ui.label(small(format!("{click} a pad to take it away.")));
                 }
             });
         })
@@ -1362,7 +1364,15 @@ fn teleporters(
     if !placing || ctx.is_pointer_over_egui() {
         return;
     }
-    let Some(cursor) = ctx.pointer_hover_pos() else {
+    // A finger is gone from the screen in the very frame its tap counts, so
+    // a click is taken where the pointer last was.
+    let clicked = ctx.input(|input| input.pointer.primary_clicked());
+    let cursor = if clicked {
+        ctx.pointer_interact_pos()
+    } else {
+        ctx.pointer_hover_pos()
+    };
+    let Some(cursor) = cursor else {
         return;
     };
     let Ok(ray) = camera.viewport_to_world(camera_transform, Vec2::new(cursor.x, cursor.y)) else {
@@ -1427,7 +1437,7 @@ fn teleporters(
         egui::CursorIcon::NotAllowed
     });
     if let Some(action) = action
-        && ctx.input(|input| input.pointer.primary_clicked())
+        && clicked
     {
         actions.write(action);
     }
