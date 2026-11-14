@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Promptnite · mobile embed test</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #17191e; color: #eee; font: 16px system-ui, sans-serif; }
+    main { max-width: 1120px; margin: 40px auto; padding: 20px; }
+    h1 { margin-bottom: 8px; } p { color: #b9bdc7; line-height: 1.5; }
+    button, a { font: inherit; } button { min-height: 44px; padding: 10px 18px; background: #ef6c5c; border: 0; border-radius: 8px; color: #17191e; font-weight: 650; cursor: pointer; }
+    a { color: #ff9a89; }
+    #stage { position: relative; height: 640px; max-height: 80vh; background: #101216; border: 1px solid #373b45; }
+    #cover { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; }
+    iframe { display: block; width: 100%; height: 100%; border: 0; }
+    #exit { display: none; position: fixed; z-index: 10; right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); min-height: 32px; padding: 4px 10px; font-size: 12px; opacity: .8; }
+    body.playing { overflow: hidden; }
+    body.playing #stage { position: fixed; inset: 0; width: 100%; height: 100%; max-height: none; border: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    body.playing #exit { display: block; }
+    @media (orientation: portrait) { button { border-radius: 999px; } }
+    @media (max-width: 760px) { main { margin: 0 auto; padding: 20px 12px; } #stage { height: 420px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Promptnite</h1>
+    <p>Phone layout test · no orientation lock. Run opens a full-window iframe, similar to an itch mobile launch.</p>
+    <div id="stage"><div id="cover"><button id="run">Run game</button><p>Demo data · no login or live backend required</p></div></div>
+    <p>Try typing, sending a prompt, opening Players / room, and rotating your phone. Use <strong>Test screen</strong> inside the game to check join, errors, countdown, and combat.</p>
+    <p><button id="embedded">Run in embedded view</button> <a href="/game/?sandbox" target="_blank" rel="noopener">Open game directly</a></p>
+    <p>This approximates the iframe layout. Actual itch hosting and a real phone keyboard still need a final check on itch.</p>
+  </main>
+  <button id="exit">Exit test</button>
+  <script>
+    const stage = document.getElementById('stage');
+    function launch(fullWindow) {
+      if (!stage.querySelector('iframe')) {
+        const frame = document.createElement('iframe');
+        frame.title = 'Promptnite game';
+        frame.allow = 'fullscreen; autoplay; clipboard-read; clipboard-write';
+        frame.allowFullscreen = true;
+        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-pointer-lock allow-forms');
+        frame.src = '/game/?sandbox';
+        stage.replaceChildren(frame);
+      }
+      document.body.classList.toggle('playing', fullWindow);
+    }
+    document.getElementById('run').onclick = () => launch(true);
+    document.getElementById('embedded').onclick = () => launch(false);
+    document.getElementById('exit').onclick = () => document.body.classList.remove('playing');
+  </script>
+</body>
+</html>

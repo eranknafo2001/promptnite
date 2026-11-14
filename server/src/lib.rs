@@ -438,7 +438,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
     }
     let code = room.trim().to_lowercase();
     if code.is_empty() || code.chars().count() > MAX_ROOM_CHARS {
-        return Err(format!("Room id must be 1-{MAX_ROOM_CHARS} characters"));
+        return Err(format!("Room ID must be 1-{MAX_ROOM_CHARS} characters"));
     }
 
     let player = ctx
@@ -511,7 +511,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         .or_else(|| (0..rules::MAX_BOTS as u32).find(free))
     else {
         return Err(format!(
-            "Room \"{}\" is full ({} players). Try another room id.",
+            "Room \"{}\" is full ({} players). Try another room ID.",
             room.code,
             rules::MAX_BOTS
         ));

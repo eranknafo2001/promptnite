@@ -5,6 +5,8 @@
 //! two neighbouring frames and move one sphere per bot accordingly.
 
 use bevy::{
+    camera::{CameraProjection, SubCameraView},
+    math::Vec3A,
     mesh::{
         VertexAttributeValues,
         skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
@@ -64,6 +66,49 @@ const STRATEGY_VIEW: View = View {
     eye: Vec3::new(11.0, 38.0, 4.5),
     focus: Vec3::new(0.0, 0.0, 4.5),
 };
+
+/// Extends the arena view above the prompt without cropping the rendered scene.
+/// The same matrix drives rendering, culling, and world-to-screen markers.
+#[derive(Debug, Clone)]
+struct PortraitProjection {
+    perspective: PerspectiveProjection,
+    reserved: f32,
+}
+
+impl PortraitProjection {
+    fn extend(&self, matrix: Mat4) -> Mat4 {
+        Mat4::from_translation(Vec3::new(0.0, -self.reserved, 0.0))
+            * Mat4::from_scale(Vec3::new(1.0, 1.0 - self.reserved, 1.0))
+            * matrix
+    }
+}
+
+impl CameraProjection for PortraitProjection {
+    fn get_clip_from_view(&self) -> Mat4 {
+        self.extend(self.perspective.get_clip_from_view())
+    }
+
+    fn get_clip_from_view_for_sub(&self, sub: &SubCameraView) -> Mat4 {
+        self.extend(self.perspective.get_clip_from_view_for_sub(sub))
+    }
+
+    fn update(&mut self, width: f32, height: f32) {
+        self.perspective
+            .update(width, height * (1.0 - self.reserved));
+    }
+
+    fn far(&self) -> f32 {
+        self.perspective.far
+    }
+
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        let mut corners = self.perspective.get_frustum_corners(z_near, z_far);
+        for index in [1, 2, 5, 6] {
+            corners[index].y *= (1.0 + self.reserved) / (1.0 - self.reserved);
+        }
+        corners
+    }
+}
 
 /// `view` from behind edge `edge`, as world (eye, focus).
 /// The edge table must match `edge_direction` in `sim/src/rules.rs`.
@@ -600,13 +645,15 @@ pub fn point_of_view(
     time: Res<Time>,
     screen: Res<Screen>,
     mut spring: ResMut<CameraSpring>,
-    mut camera: Single<&mut Transform, With<ArenaCamera>>,
+    window: Single<&Window>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
 ) {
     // Stiffness, and damping just under critical for the overshoot.
     const STIFFNESS: f32 = 70.0;
     const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
 
     let Screen::Room(snapshot) = &*screen else {
+        *camera.1 = Projection::Perspective(PerspectiveProjection::default());
         return;
     };
     // Only while the prompt box is open, as in `ui::draw`: nothing sent
@@ -617,7 +664,45 @@ pub fn point_of_view(
             None | Some(SubmissionStatus::Failed)
         );
     let view = if writing { &STRATEGY_VIEW } else { &FIGHT_VIEW };
-    let (eye, focus) = place(view, snapshot.me.edge);
+    let compact = crate::ui::compact_view(window.width());
+    let reserved = if compact && writing {
+        (112.0 + window.height() * 0.48)
+            .min(window.height() - 80.0)
+            .max(0.0)
+    } else {
+        0.0
+    };
+    let mut projection = if reserved > 0.0 {
+        Projection::custom(PortraitProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: reserved / window.height().max(1.0),
+        })
+    } else {
+        Projection::Perspective(PerspectiveProjection::default())
+    };
+    projection.update(window.width().max(1.0), window.height().max(1.0));
+    *camera.1 = projection;
+    let aspect = window.width() / (window.height() - reserved).max(1.0);
+    let view = if compact {
+        // Fit the arena's width, then bring portrait framing 15% closer
+        // to leave less empty space along its sides.
+        let portrait_zoom = if window.height() > window.width() {
+            0.85
+        } else {
+            1.0
+        };
+        let distance = (1.25 / aspect.max(0.3)).max(1.0) * portrait_zoom;
+        View {
+            eye: Vec3::new(19.0, 26.0, 0.0) * distance,
+            focus: Vec3::ZERO,
+        }
+    } else {
+        View {
+            eye: view.eye,
+            focus: view.focus,
+        }
+    };
+    let (eye, focus) = place(&view, snapshot.me.edge);
     let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
     // A long frame (a hitch, a hidden tab) must not fling the camera.
     let dt = time.delta_secs().min(1.0 / 30.0);
@@ -631,7 +716,7 @@ pub fn point_of_view(
     }
     spring.at = Some((at, focus_at));
     spring.velocity = (v_eye, v_focus);
-    **camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
+    *camera.0 = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
 }
 
 /// Decide which tick to show and blend the frames around it. Without a
@@ -1117,4 +1202,59 @@ fn slash_mesh() -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; count])
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+#[cfg(test)]
+mod portrait_projection_tests {
+    use super::*;
+
+    #[test]
+    fn full_screen_projection_keeps_arena_in_lower_region() {
+        for (width, height, reserved) in [(390.0, 844.0, 517.0), (320.0, 568.0, 385.0)] {
+            let mut old = PerspectiveProjection::default();
+            old.update(width, height - reserved);
+            let mut full = PortraitProjection {
+                perspective: PerspectiveProjection::default(),
+                reserved: reserved / height,
+            };
+            full.update(width, height);
+            for point in [
+                Vec3::new(-3.0, 2.0, -30.0),
+                Vec3::new(4.0, -3.0, -50.0),
+                Vec3::new(0.0, 0.0, -20.0),
+            ] {
+                let before = old.get_clip_from_view().project_point3(point);
+                let after = full.get_clip_from_view().project_point3(point);
+                let expected = Vec2::new(
+                    (before.x + 1.0) * width / 2.0,
+                    reserved + (1.0 - before.y) * (height - reserved) / 2.0,
+                );
+                let actual = Vec2::new(
+                    (after.x + 1.0) * width / 2.0,
+                    (1.0 - after.y) * height / 2.0,
+                );
+                assert!(expected.distance(actual) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn culling_corners_match_visible_full_screen_edges() {
+        let mut full = PortraitProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: 0.61,
+        };
+        full.update(390.0, 844.0);
+        let corners = full.get_frustum_corners(-0.1, -1000.0);
+        let edges = [
+            Vec2::new(1.0, -1.0),
+            Vec2::ONE,
+            Vec2::new(-1.0, 1.0),
+            -Vec2::ONE,
+        ];
+        for (index, corner) in corners.into_iter().enumerate() {
+            let projected = full.get_clip_from_view().project_point3(corner.into());
+            assert!(projected.truncate().distance(edges[index % 4]) < 0.001);
+        }
+    }
 }
