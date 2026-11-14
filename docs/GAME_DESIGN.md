@@ -60,12 +60,13 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | Action | Lua | Effect |
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
-| dash | `{ action = "dash", dx = 1, dy = 0 }` | A step three times as long, for stamina |
+| dash | `{ action = "dash", dx = 1, dy = 0 }` | A step 3.6 times as long, for stamina |
 | shield | `{ action = "shield", dx = 1, dy = 0 }` | Block every hit this tick, for stamina; the step is optional and half as long |
-| attack | `{ action = "attack" }` | Punch the nearest enemy in range, for stamina |
+| attack | `{ action = "attack" }` | Start winding up a swing, for stamina. It lands 3 ticks later on the nearest enemy in range and throws it back |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
-One action per tick: a bot cannot walk and punch at once.
+One action per tick: a bot cannot walk and start a swing at once. While it
+winds one up it can only walk.
 
 **Teleporting** is not an action: it happens to a bot. The pads form a ring
 by number. A bot whose centre comes within a pad's radius (0.9) is taken, in
@@ -85,14 +86,16 @@ Dash is the original sketch's **run**; stamina is what it costs.
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, stamina, shielding, cooldown }
-  -- state.enemies { { id, x, y, hp, stamina, shielding, dist }, ... }   living enemies only
+  -- state.me      { id, x, y, hp, stamina, shielding, cooldown, winding }
+  -- state.enemies { { id, x, y, hp, stamina, shielding, cooldown, winding, dist }, ... }   living enemies only
   -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
-  --                 attack_damage, attack_cooldown, max_hp, max_stamina,
+  --                 attack_damage, attack_cooldown, attack_windup, knockback,
+  --                 max_hp, max_stamina,
   --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
-  --                 dash_speed, shield_stamina_cost, shield_speed,
+  --                 dash_speed, shield_stamina_cost, shield_block_stamina_cost,
+  --                 shield_speed,
   --                 teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
@@ -107,23 +110,32 @@ Globals persist between ticks, so a script can remember things.
   0.5, start at the middle of their own edge (1.5 units in from the wall),
   are solid (cannot overlap) and cannot leave the arena.
 - 10 ticks per second. The time limit is the room's match length.
-- 100 hp, a punch does 10 damage within 1.5 units, then a 5 tick cooldown.
+- 100 hp, a punch does 10 damage within 1.5 units.
+- **A swing is wound up.** It lands 3 ticks after the bot asks for it, on
+  the nearest enemy in range by then, and everybody can see it coming
+  (`winding` counts down for the bot and for its enemies). A bot winding up
+  can walk and nothing else. Then a 5 tick cooldown, hit or miss.
+- **A hit throws its target back** 2.5 units, straight away from the
+  attacker, and breaks the wind-up of the bot it hurts: of two bots swinging
+  at each other, the one that started first lands.
+- **Ring-out.** A bot thrown past the railing is out, whatever hp it had.
+  Walking and shoving stop at the railing; only a hit goes over it.
 - Walking speed 3 units per second.
 - 100 stamina, the same for every build. A swing costs 15, hit or miss, and
-  a dash 20; a dash covers three times a walk's distance. Every tick a bot
-  spends none (walking, standing still, waiting out its cooldown) gives 2
-  back. A bot that cannot pay for a swing does not swing, and one that cannot
-  pay for a dash walks. Swinging flat out costs more than it wins back, so a
-  bot that never lets up runs dry and then swings less often.
+  a dash 20; a dash covers 3.6 times a walk's distance. Every tick a bot
+  spends none (walking, standing still, winding up, waiting out its
+  cooldown) gives 2 back. A bot that cannot pay for a swing does not swing,
+  and one that cannot pay for a dash walks.
 - A shield is up for the tick a bot asks for it and costs 5 stamina each
-  time. No hit lands on a bot behind one (the attacker still pays for the
-  swing). The bot may move while it holds it, at half its walking speed. With
+  time. A bot behind one takes no damage, but the hit costs it 20 stamina more
+  and still throws it half as far, over the railing too: blocking costs more
+  than swinging, so a bot that only defends runs dry. The bot may move while it holds it, at half its walking speed. With
   less than 5 stamina the shield stays down and the action is a walk. Held
   without a break it lasts 2 seconds from full. `shielding` says whether a
   bot's shield was up on the tick before.
 - Attacks in the same tick land simultaneously, so a double knockout is
   possible.
-- Last bot standing wins. At the time limit the bot with the most hp wins; a
+- Last bot standing wins, by knockout or ring-out. At the time limit the bot with the most hp wins; a
   tie is a draw.
 - A script that errors or runs out of its per-tick instruction budget makes the
   bot idle for that tick. One that goes over the memory limit is switched off
@@ -263,5 +275,7 @@ Decisions worth knowing about:
   bring your own key, or per-player budgets.
 - **Agent depth**: today the agent is a single model call. It could become a
   real agent that tests its bot against the house bot before delivering.
-- **More to do in a fight**: facing, ranged attacks, obstacles, pickups, and
-  seeing what the enemy did last tick.
+- **More to do in a fight**: a swing aimed where the bot faced when it wound
+  up (so a sidestep dodges it, and fights stop running along one line),
+  ranged attacks, obstacles, pickups, and weapons with their own wind-up and
+  knockback in place of the five stat points.

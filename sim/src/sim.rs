@@ -66,6 +66,8 @@ pub enum ActionKind {
     Dead,
     /// Had the shield up, moving or not.
     Shield,
+    /// Winding up a swing that has not landed yet.
+    Windup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +112,8 @@ struct Bot {
     hp: i32,
     stamina: i32,
     cooldown: u32,
+    /// Ticks until the swing being wound up lands. 0 when there is none.
+    winding: u32,
     /// Whether the shield was up on the last tick applied.
     shielding: bool,
     /// Whether a pad takes the bot. Not after a jump, until it has stepped
@@ -220,6 +224,7 @@ pub fn run_match(
                 hp: stats.max_hp,
                 stamina: rules::MAX_STAMINA,
                 cooldown: 0,
+                winding: 0,
                 shielding: false,
                 teleports: true,
                 faulted: lua.is_none(),
@@ -272,8 +277,10 @@ pub fn run_match(
             let len = (dx * dx + dy * dy).sqrt();
             let moving = len > 1e-6;
             let mut step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
-            // A dash or a shield the bot cannot pay for is a walk.
+            // A dash or a shield is a walk for a bot that cannot pay for it, or
+            // that is winding up a swing.
             match wants {
+                _ if bot.winding > 0 => {}
                 ActionKind::Shield if bot.stamina >= rules::SHIELD_STAMINA_COST => {
                     bot.stamina -= rules::SHIELD_STAMINA_COST;
                     spent[i] = true;
@@ -287,8 +294,10 @@ pub fn run_match(
                     step *= rules::DASH_SPEED_FACTOR;
                     did[i] = ActionKind::Dash;
                 }
-                _ if moving => did[i] = ActionKind::Walk,
                 _ => {}
+            }
+            if moving && did[i] == ActionKind::Idle {
+                did[i] = ActionKind::Walk;
             }
             if moving {
                 bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
@@ -300,42 +309,80 @@ pub fn run_match(
         // moving: punches land where the bots end up, as they do after a walk.
         teleport(&mut bots, teleporters);
 
-        // 3. Attacks, resolved simultaneously: two bots can knock each other out.
+        // 3. Attacks. A swing is paid for when its wind-up starts and lands
+        // when it ends, on whoever is nearest and in range by then. Swings
+        // landing on the same tick land together: two bots can knock each
+        // other out.
         let mut damage = vec![0; bots.len()];
+        let mut shove = vec![(0.0f32, 0.0f32); bots.len()];
         for i in 0..bots.len() {
             if !bots[i].alive() {
                 continue;
             }
-            if actions[i] == Action::Attack
+            if bots[i].winding > 0 {
+                bots[i].winding -= 1;
+                did[i] = ActionKind::Windup;
+                if bots[i].winding > 0 {
+                    continue;
+                }
+                bots[i].cooldown = bots[i].stats.attack_cooldown;
+                match nearest_enemy(&bots, i) {
+                    Some((target, dist)) if dist <= bots[i].stats.attack_range => {
+                        damage[target] += bots[i].stats.attack_damage;
+                        // Exactly on top of each other: a fixed axis, to stay deterministic.
+                        let (nx, ny) = if dist > 1e-6 {
+                            (
+                                (bots[target].x - bots[i].x) / dist,
+                                (bots[target].y - bots[i].y) / dist,
+                            )
+                        } else {
+                            (1.0, 0.0)
+                        };
+                        shove[target].0 += nx * rules::KNOCKBACK;
+                        shove[target].1 += ny * rules::KNOCKBACK;
+                        did[i] = ActionKind::Attack;
+                    }
+                    _ => did[i] = ActionKind::Miss,
+                }
+            } else if actions[i] == Action::Attack
                 && bots[i].cooldown == 0
                 && bots[i].stamina >= rules::ATTACK_STAMINA_COST
             {
                 bots[i].stamina -= rules::ATTACK_STAMINA_COST;
                 spent[i] = true;
-                bots[i].cooldown = bots[i].stats.attack_cooldown;
-                match nearest_enemy(&bots, i) {
-                    Some((target, dist)) if dist <= bots[i].stats.attack_range => {
-                        damage[target] += bots[i].stats.attack_damage;
-                        did[i] = ActionKind::Attack;
-                    }
-                    _ => did[i] = ActionKind::Miss,
-                }
+                bots[i].winding = rules::ATTACK_WINDUP_TICKS;
+                did[i] = ActionKind::Windup;
             } else {
-                if actions[i] == Action::Attack {
-                    did[i] = ActionKind::Miss;
-                }
                 bots[i].cooldown = bots[i].cooldown.saturating_sub(1);
             }
         }
         for (i, bot) in bots.iter_mut().enumerate() {
-            // A shield takes the whole hit.
-            if bot.alive() && damage[i] > 0 && !bot.shielding {
+            if !bot.alive() || damage[i] == 0 {
+                continue;
+            }
+            let (mut sx, mut sy) = shove[i];
+            if bot.shielding {
+                // A shield takes the damage, at a price, and half the shove.
+                bot.stamina = (bot.stamina - rules::SHIELD_BLOCK_STAMINA_COST).max(0);
+                (sx, sy) = (sx / 2.0, sy / 2.0);
+            } else {
                 bot.hp = (bot.hp - damage[i]).max(0);
-                if !bot.alive() {
-                    did[i] = ActionKind::Dead;
-                }
+                // A hit that gets through breaks the wind-up of whoever took it.
+                bot.winding = 0;
+            }
+            let (x, y) = (bot.x + sx, bot.y + sy);
+            // Thrown over the railing: out, whatever hp was left.
+            if x.abs() > limit || y.abs() > limit {
+                bot.hp = 0;
+            }
+            (bot.x, bot.y) = (x.clamp(-limit, limit), y.clamp(-limit, limit));
+            if !bot.alive() {
+                did[i] = ActionKind::Dead;
             }
         }
+        // A thrown bot may land on another, or on a pad.
+        separate(&mut bots, limit);
+        teleport(&mut bots, teleporters);
 
         // 4. Stamina comes back on a tick that cost none.
         for (i, bot) in bots.iter_mut().enumerate() {
@@ -379,6 +426,8 @@ fn decide(
             hp: other.hp,
             stamina: other.stamina,
             shielding: other.shielding,
+            cooldown: other.cooldown,
+            winding: other.winding,
             dist: distance(me, other),
         })
         .collect();
@@ -393,9 +442,10 @@ fn decide(
             hp: me.hp,
             stamina: me.stamina,
             shielding: me.shielding,
+            cooldown: me.cooldown,
+            winding: me.winding,
             dist: 0.0,
         },
-        cooldown: me.cooldown,
         enemies: &enemies,
         teleporters,
     };
@@ -639,13 +689,25 @@ mod tests {
 
     #[test]
     fn string_shorthand_and_cooldown() {
-        // Always attacking: only every (cooldown + 1)th swing is real.
+        // Always attacking: winds up, swings at nothing, waits out the cooldown.
         let puncher = r#"function tick() return "attack" end"#;
         let outcome = run_match(&[spec(1, puncher), spec(2, IDLE)], 0);
         assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
         // Never in range (spawned on opposite edges), so nobody takes damage.
         assert_eq!(outcome.frames.last().unwrap().bots[1].hp, rules::MAX_HP);
-        assert_eq!(outcome.frames[1].bots[0].action, ActionKind::Miss);
+        let windup = rules::ATTACK_WINDUP_TICKS as usize;
+        let cycle = windup + 1 + rules::ATTACK_COOLDOWN_TICKS as usize;
+        for start in [1, 1 + cycle] {
+            assert_eq!(outcome.frames[start].bots[0].action, ActionKind::Windup);
+            assert_eq!(
+                outcome.frames[start + windup].bots[0].action,
+                ActionKind::Miss
+            );
+            assert_eq!(
+                outcome.frames[start + windup + 1].bots[0].action,
+                ActionKind::Idle
+            );
+        }
     }
 
     fn stamina_of(outcome: &MatchOutcome) -> Vec<i32> {
@@ -668,17 +730,7 @@ mod tests {
                 after_swing + rules::STAMINA_REGEN
             ]
         );
-        // Swinging flat out runs dry, and never goes into debt.
         assert!(stamina.iter().all(|s| (0..=rules::MAX_STAMINA).contains(s)));
-        assert!(stamina.iter().any(|s| *s < rules::ATTACK_STAMINA_COST));
-        // A tired bot swings less often than its cooldown allows.
-        let swings = |frames: &[Frame]| {
-            frames
-                .windows(2)
-                .filter(|w| w[1].bots[0].stamina < w[0].bots[0].stamina)
-                .count()
-        };
-        assert!(swings(&outcome.frames[300..]) < swings(&outcome.frames[..100]));
     }
 
     #[test]
@@ -713,32 +765,33 @@ mod tests {
 
     #[test]
     fn shield_blocks_hits_slows_the_bot_and_burns_stamina() {
-        // Raises its shield whenever the chaser is close, until it cannot pay.
+        // Comes in from the railing, then takes every swing on its shield.
         let turtle = r#"
             local was = false
             function tick(state)
               assert(state.me.shielding == was)
-              was = state.enemies[1].dist < 2 and state.me.stamina >= state.rules.shield_stamina_cost
-              if state.enemies[1].dist < 2 then return "shield" end
+              was = state.enemies[1].winding == 1
+              if was then return "shield" end
+              if state.me.y > 3 then return { action = "walk", dx = 0, dy = -1 } end
             end
         "#;
-        let outcome = run_match(&[spec(1, turtle), spec(2, EXAMPLE_SCRIPT)], 0);
+        let outcome = run_match(&[spec(1, turtle), spec(2, BRAWLER)], 0);
         assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
         let frames = &outcome.frames;
-        let up = |f: &Frame| f.bots[0].action == ActionKind::Shield;
-        let first = frames.iter().position(up).unwrap();
-        let held = (rules::MAX_STAMINA / rules::SHIELD_STAMINA_COST) as usize;
-        let last = first + held - 1;
-        assert!(frames[first..=last].iter().all(up));
-        assert!(
-            frames[first..=last]
-                .iter()
-                .any(|f| f.bots[1].action == ActionKind::Attack)
+        let block = frames
+            .iter()
+            .position(|f| f.bots[1].action == ActionKind::Attack)
+            .unwrap();
+        let (before, after) = (&frames[block - 1].bots[0], &frames[block].bots[0]);
+        assert_eq!(after.action, ActionKind::Shield);
+        assert_eq!(after.hp, rules::MAX_HP);
+        assert_eq!(
+            after.stamina,
+            before.stamina - rules::SHIELD_STAMINA_COST - rules::SHIELD_BLOCK_STAMINA_COST
         );
-        assert_eq!(frames[last].bots[0].hp, rules::MAX_HP);
-        assert_eq!(frames[last].bots[0].stamina, 0);
-        // Out of stamina: the shield is down, and the hits land.
-        assert_eq!(frames[last + 1].bots[0].action, ActionKind::Idle);
+        // The shield takes the damage and half the shove.
+        assert!((after.y - before.y - rules::KNOCKBACK / 2.0).abs() < 1e-3);
+        // Blocking is not winning: it is shoved back to the railing and over.
         assert_eq!(outcome.winner, Some(2));
 
         let creeper = r#"function tick() return { action = "shield", dx = -1, dy = 0 } end"#;
@@ -930,5 +983,130 @@ mod tests {
         let script = "function tick() return { action = 'teleport', to = 2 } end";
         let out = super::run_match(&[spec(1, script), spec(2, IDLE)], &[], 0, 1);
         assert!(out.faults[0].message.contains("unknown action"));
+    }
+
+    /// What every bot did before swings could be read: walk in, swing on cooldown.
+    const BRAWLER: &str = r#"
+        function tick(state)
+          local e = state.enemies[1]
+          if e.dist <= state.rules.attack_range and state.me.cooldown == 0 then return "attack" end
+          return { action = "walk", dx = e.x - state.me.x, dy = e.y - state.me.y }
+        end
+    "#;
+
+    fn count(out: &MatchOutcome, bot: usize, kind: ActionKind) -> usize {
+        let did = |f: &&Frame| f.bots[bot].action == kind;
+        out.frames.iter().filter(did).count()
+    }
+
+    fn gap(frame: &Frame) -> f32 {
+        let (a, b) = (&frame.bots[0], &frame.bots[1]);
+        ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn a_swing_is_wound_up_in_plain_sight_and_throws_its_target_over_the_railing() {
+        // Never moves from its spawn by the railing, and counts the wind-up down.
+        let watcher = r#"
+            local seen = 0
+            function tick(state)
+              local w = state.enemies[1].winding
+              if w > 0 then
+                seen = seen + 1
+                assert(w == state.rules.attack_windup + 1 - seen)
+              end
+            end
+        "#;
+        let out = run_match(&[spec(1, BRAWLER), spec(2, watcher)], 0);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+        let windup = rules::ATTACK_WINDUP_TICKS as usize;
+        let start = out
+            .frames
+            .iter()
+            .position(|f| f.bots[0].action == ActionKind::Windup)
+            .unwrap();
+        let land = start + windup;
+        assert!(
+            out.frames[start..land]
+                .iter()
+                .all(|f| f.bots[0].action == ActionKind::Windup && f.bots[1].hp == rules::MAX_HP)
+        );
+        // One hit, and it is out with nearly all its hp.
+        assert_eq!(out.frames[land].bots[0].action, ActionKind::Attack);
+        assert_eq!(out.frames[land].bots[1].action, ActionKind::Dead);
+        assert_eq!(out.frames.len(), land + 1);
+        assert_eq!(out.winner, Some(1));
+    }
+
+    #[test]
+    fn a_hit_throws_its_target_back() {
+        // Two brawlers meet in the middle and land their first swings together.
+        let out = run_match(&[spec(1, BRAWLER), spec(2, BRAWLER)], 0);
+        let hit = |f: &&Frame| f.bots.iter().all(|b| b.action == ActionKind::Attack);
+        let first = out.frames.iter().find(hit).unwrap();
+        assert!(first.bots.iter().all(|b| b.hp == rules::MAX_HP - 10));
+        assert!(gap(first) > 2.0 * rules::KNOCKBACK, "{}", gap(first));
+    }
+
+    #[test]
+    fn a_hit_breaks_a_wind_up() {
+        // Comes to the middle, and only ever swings one tick after its enemy
+        // started to: the enemy's swing lands first, every time.
+        let late = r#"
+            function tick(state)
+              local e = state.enemies[1]
+              if e.winding == state.rules.attack_windup - 1 then return "attack" end
+              if state.me.y < -3 then return { action = "walk", dx = 0, dy = 1 } end
+            end
+        "#;
+        let out = run_match(&[spec(1, BRAWLER), spec(2, late)], 0);
+        assert!(out.faults.is_empty(), "{:?}", out.faults);
+        assert!(count(&out, 1, ActionKind::Windup) > 0);
+        assert_eq!(count(&out, 1, ActionKind::Attack), 0);
+        assert_eq!(count(&out, 1, ActionKind::Miss), 0);
+        assert_eq!(out.winner, Some(1));
+    }
+
+    #[test]
+    fn reading_the_wind_up_beats_swinging_on_cooldown() {
+        for seed in 0..5 {
+            let out = run_match(&[spec(1, EXAMPLE_SCRIPT), spec(2, BRAWLER)], seed);
+            assert!(out.faults.is_empty(), "{:?}", out.faults);
+            assert_eq!(out.winner, Some(1), "seed {seed}");
+            // The brawler swings at a bot that is no longer there.
+            assert!(count(&out, 1, ActionKind::Miss) >= 3, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_fight_between_bots_that_defend_is_a_series_of_exchanges() {
+        // Under the old rules two bots met after 2 seconds and traded punches
+        // standing still until one dropped, 6 seconds later.
+        for seed in 0..5 {
+            let out = run_match(&[spec(1, EXAMPLE_SCRIPT), spec(2, EXAMPLE_SCRIPT)], seed);
+            assert!(out.faults.is_empty(), "{:?}", out.faults);
+            let ticks = out.frames.len() - 1;
+            assert!(ticks > 200, "seed {seed}: over in {ticks} ticks");
+            // They come together, are thrown apart and come back, many times.
+            let mut exchanges = 0;
+            let mut apart = true;
+            for frame in &out.frames {
+                if apart && gap(frame) <= rules::ATTACK_RANGE {
+                    exchanges += 1;
+                }
+                apart = apart && gap(frame) > rules::ATTACK_RANGE || gap(frame) > 2.5;
+            }
+            assert!(exchanges >= 8, "seed {seed}: {exchanges} exchanges");
+            for bot in 0..2 {
+                let hurt = out
+                    .frames
+                    .windows(2)
+                    .filter(|w| w[1].bots[bot].hp < w[0].bots[bot].hp)
+                    .count();
+                assert!(hurt >= 3, "seed {seed}: bot {bot} was hit {hurt} times");
+                let blocks = count(&out, bot, ActionKind::Shield);
+                assert!(blocks >= 3, "seed {seed}: bot {bot} blocked {blocks} times");
+            }
+        }
     }
 }

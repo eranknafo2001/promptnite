@@ -57,8 +57,19 @@ pub const WALK_SPEED: f32 = 3.0;
 pub const ATTACK_RANGE: f32 = 1.5;
 pub const ATTACK_DAMAGE: i32 = 10;
 
-/// Ticks a bot must wait after attacking before it can attack again.
+/// Ticks a bot must wait after its swing lands before it can start another.
 pub const ATTACK_COOLDOWN_TICKS: u32 = 5;
+
+/// An `attack` does not land at once: the bot winds up for this many ticks,
+/// in plain sight of everybody, and the swing lands on whoever is in range
+/// then. A bot winding up can still walk, and do nothing else. This is what
+/// makes a hit something that can be dodged or blocked.
+pub const ATTACK_WINDUP_TICKS: u32 = 3;
+
+/// A swing that lands throws its target this far, straight away from the
+/// attacker. Half as far behind a shield. A bot thrown over the railing is
+/// out of the match, whatever hp it had left.
+pub const KNOCKBACK: f32 = 2.5;
 
 /// Every bot starts a match with this much stamina and never holds more. It
 /// is the same for all builds.
@@ -92,6 +103,10 @@ pub const TELEPORTER_SPACING: f32 = 2.5;
 /// What every tick with the shield up costs. A bot with less cannot raise
 /// it. More than a tick wins back, so no bot hides behind it for ever.
 pub const SHIELD_STAMINA_COST: i32 = 5;
+
+/// What a hit taken on the shield costs on top. Blocking costs more than
+/// swinging, so a bot cannot block for ever.
+pub const SHIELD_BLOCK_STAMINA_COST: i32 = 20;
 
 /// A bot behind its shield moves this many times the distance of a `walk`.
 pub const SHIELD_SPEED_FACTOR: f32 = 0.5;
