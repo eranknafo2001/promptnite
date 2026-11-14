@@ -838,15 +838,20 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
         form.help = false;
     }
 
-    let card = egui::Area::new(egui::Id::new("prompt_help_card"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.multiply_opacity(alpha);
-            box_frame().show(ui, |ui| {
-                ui.set_width(WIDTH.min((screen.width() - 4.0 * EDGE).max(100.0)));
-                egui::ScrollArea::vertical()
-                    .max_height((screen.height() - 100.0).max(100.0))
+    let card =
+        egui::Area::new(egui::Id::new("prompt_help_card"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.multiply_opacity(alpha);
+                box_frame().show(ui, |ui| {
+                    ui.set_width(WIDTH.min((screen.width() - 4.0 * EDGE).max(100.0)));
+                    let max_height = (screen.height() - 100.0).max(100.0);
+                    // Areas start with a 400px height budget; let desktop help use
+                    // the screen's available space before introducing scrolling.
+                    ui.set_max_height(max_height);
+                    egui::ScrollArea::vertical()
+                    .max_height(max_height)
                     .show(ui, |ui| {
                         ui.label(theme::heading("What your bot knows"));
                         ui.add_space(4.0);
@@ -883,7 +888,10 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                         }
 
                         ui.add_space(12.0);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
                             let got_it = egui::Button::new(
                                 egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)),
                             );
@@ -892,8 +900,8 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                             }
                         });
                     });
+                });
             });
-        });
 
     // Above the overlay, scaled about its own centre.
     ctx.move_to_top(card.response.layer_id);
