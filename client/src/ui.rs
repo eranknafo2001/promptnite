@@ -50,7 +50,6 @@ const MAX_ROOM_CHARS: usize = 24;
 const MAX_PROMPT_CHARS: usize = 2_000;
 const JOIN_CONTROL_HEIGHT: f32 = 44.0;
 const JOIN_CONTROL_GAP: f32 = 8.0;
-const BOT_PANEL_WIDTH: f32 = 350.0;
 pub const BOT_TAB_HEIGHT: f32 = 152.0;
 
 /// A sharp launch followed by a long settle, staggered by bot order.
@@ -102,6 +101,7 @@ pub enum Action {
         room: String,
     },
     SubmitPrompt(String),
+    NextRound,
     SetRoomSettings {
         match_secs: u32,
         house_bot: bool,
@@ -250,6 +250,14 @@ impl Snapshot {
         self.game.owner == self.me.id
     }
 
+    fn can_edit_room_settings(&self) -> bool {
+        self.i_own_the_room()
+            && self.game.phase == Phase::Prompting
+            && !self
+                .submission_of(self.me.id)
+                .is_some_and(|s| s.status == SubmissionStatus::Generating)
+    }
+
     fn name_of(&self, id: u32) -> String {
         if id == HOUSE_BOT_ID {
             return "House bot".into();
@@ -391,14 +399,16 @@ fn draw(
     // Only the owner moves the pads, and only while the next match is still
     // to be set up.
     let game = &snapshot.game;
-    form.placing &= game.phase == Phase::Prompting && snapshot.i_own_the_room() && !form.help;
+    form.placing &= snapshot.can_edit_room_settings() && !form.help;
     if form.placing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         form.placing = false;
     }
     arena_ui.placing = form.placing;
     let view = (camera, camera_transform);
     teleporters(ctx, &background, snapshot, view, form.placing, &mut actions);
-    bot_markers(&background, &replay, camera, camera_transform);
+    if matches!(game.phase, Phase::Countdown | Phase::Fighting) {
+        bot_markers(&background, &replay, camera, camera_transform);
+    }
     if !compact {
         bot_cards(&background, screen, snapshot, &replay);
     }
@@ -428,7 +438,7 @@ fn draw(
         roster(&background, screen, snapshot, &replay)
     };
 
-    if game.phase == Phase::Prompting && snapshot.i_own_the_room() && !compact {
+    if snapshot.can_edit_room_settings() && !compact {
         room_settings(ctx, snapshot, dim, &mut form.placing, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
@@ -468,12 +478,31 @@ fn draw(
         }
         // The big countdown and the fight speak for themselves.
         (Phase::Countdown | Phase::Fighting, _) => {}
-        (Phase::Results, _) => status_line(
-            ctx,
-            false,
-            "Next round starts in a moment.",
-            if compact { 0.0 } else { BOT_TAB_HEIGHT },
-        ),
+        (Phase::Results, _) => {
+            let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
+            if snapshot.i_own_the_room() {
+                egui::Area::new(egui::Id::new("next_round"))
+                    .anchor(
+                        egui::Align2::CENTER_BOTTOM,
+                        egui::vec2(0.0, -EDGE - 6.0 - lift),
+                    )
+                    .show(ctx, |ui| {
+                        if ui
+                            .add_sized([180.0, 44.0], egui::Button::new("Next round"))
+                            .clicked()
+                        {
+                            actions.write(Action::NextRound);
+                        }
+                    });
+            } else {
+                status_line(
+                    ctx,
+                    false,
+                    "Waiting for the room owner to start the next round.",
+                    lift,
+                );
+            }
+        }
     }
     if help != 0.0 {
         prompt_help(ctx, screen, help, &mut form);
@@ -899,7 +928,7 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
 }
 
 /// The room's settings, top left. Only the owner gets them, and only while
-/// prompting: that is when the next match is still to be set up.
+/// prompting, before or after generation: hidden while choosing a build.
 fn room_settings(
     ctx: &egui::Context,
     snapshot: &Snapshot,
@@ -1507,7 +1536,6 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
 /// Health and the thin stamina strip share one rounded wrapper.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     if matches!(snapshot.game.phase, Phase::Prompting | Phase::Countdown) {
-        loadout_cards(painter, screen, snapshot);
         return;
     }
     if replay.bots.is_empty() {
@@ -1726,73 +1754,6 @@ fn stat_strip(
     }
 }
 
-/// During prompting and countdown, only the caller's build is visible.
-fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot) {
-    let sub = snapshot.submission_of(snapshot.me.id);
-    let ready = sub.filter(|s| {
-        s.status == SubmissionStatus::Ready
-            && s.build.as_ref().is_some_and(|build| build.len() == 5)
-    });
-    let top = if snapshot.game.phase == Phase::Prompting && snapshot.i_own_the_room() {
-        (screen.center().y - 65.0).max(screen.top() + 220.0)
-    } else {
-        screen.center().y - 65.0
-    };
-    let outer = egui::Rect::from_min_size(
-        egui::pos2(screen.left() + EDGE, top),
-        egui::vec2(BOT_PANEL_WIDTH, 140.0),
-    );
-    theme::panel(painter, outer);
-    let inner = outer.shrink(16.0);
-    painter.text(
-        inner.left_top(),
-        egui::Align2::LEFT_TOP,
-        "Your build",
-        theme::bold(theme::SIZE_HEADING),
-        theme::INK,
-    );
-    if let Some(sub) = ready {
-        painter.text(
-            inner.left_top() + egui::vec2(0.0, 30.0),
-            egui::Align2::LEFT_TOP,
-            format!("{} / {} HP", sub.max_hp, sub.max_hp),
-            egui::FontId::proportional(theme::SIZE_SMALL),
-            theme::INK,
-        );
-        let [r, g, b] = bot_color(snapshot.me.id);
-        let color = egui::Color32::from_rgb(r, g, b);
-        painter.rect_filled(
-            egui::Rect::from_min_size(
-                inner.left_top() + egui::vec2(0.0, 51.0),
-                egui::vec2(inner.width(), 6.0),
-            ),
-            3.0,
-            color,
-        );
-        stat_strip(
-            painter,
-            inner.left_top() + egui::vec2(0.0, 81.0),
-            inner.width(),
-            sub.build.as_deref().unwrap_or_default(),
-            theme::INK,
-            5,
-        );
-    } else {
-        let text = match sub.map(|s| s.status) {
-            Some(SubmissionStatus::Generating) => "Choosing build…",
-            Some(SubmissionStatus::Failed) => "Build failed · try another prompt",
-            _ => "Waiting for your prompt",
-        };
-        painter.text(
-            inner.left_top() + egui::vec2(0.0, 40.0),
-            egui::Align2::LEFT_TOP,
-            text,
-            egui::FontId::proportional(theme::SIZE_SMALL),
-            theme::INK_MUTED,
-        );
-    }
-}
-
 /// The big text over the arena: countdown and result.
 fn banner(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     let game = &snapshot.game;
@@ -1902,7 +1863,7 @@ fn compact_roster(
                                 fault.message
                             )));
                         }
-                        if snapshot.i_own_the_room() && snapshot.game.phase == Phase::Prompting {
+                        if snapshot.can_edit_room_settings() {
                             ui.separator();
                             ui.label("Match length");
                             ui.horizontal_wrapped(|ui| {

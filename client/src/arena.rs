@@ -818,8 +818,9 @@ pub fn replay(
     let tick = match room.phase {
         Phase::Countdown => 0.0,
         Phase::Fighting => (replay.phase_elapsed * room.ticks_per_sec as f32).min(last),
-        // Results, and Prompting for the next round: leave the final frame up.
-        Phase::Results | Phase::Prompting => last,
+        // Keep final stats for the results UI, but clear them before prompting.
+        Phase::Results => last,
+        Phase::Prompting => return,
     };
 
     let Some(conn) = conn else { return };
@@ -924,6 +925,13 @@ pub fn sync_bots(
         Option<&MeshMaterial3d<StandardMaterial>>,
     )>,
 ) {
+    if !matches!(&*screen, Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Countdown | Phase::Fighting))
+    {
+        for (entity, _, _, _) in &mut bots {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
     let now = time.elapsed_secs();
     // Tombstones face the player's own camera.
     let facing = match &*screen {
@@ -1245,6 +1253,7 @@ const SLASH_SECS: f32 = 0.2;
 /// goes.
 fn fade_slashes(
     mut commands: Commands,
+    screen: Res<Screen>,
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut slashes: Query<(
@@ -1258,7 +1267,9 @@ fn fade_slashes(
     for (entity, slash, material, mut transform) in &mut slashes {
         // Full strength while its swing lasts, then fade.
         let t = (now - slash.born - SWING_SECS) / SLASH_SECS;
-        if t >= 1.0 {
+        if t >= 1.0
+            || !matches!(&*screen, Screen::Room(snapshot) if snapshot.game.phase == Phase::Fighting)
+        {
             commands.entity(entity).despawn();
             continue;
         }

@@ -25,6 +25,7 @@ pub mod match_faults_table;
 pub mod match_frames_table;
 pub mod my_player_table;
 pub mod my_room_table;
+pub mod next_round_reducer;
 pub mod phase_timer_type;
 pub mod phase_type;
 pub mod player_type;
@@ -59,6 +60,7 @@ pub use match_faults_table::*;
 pub use match_frames_table::*;
 pub use my_player_table::*;
 pub use my_room_table::*;
+pub use next_round_reducer::next_round;
 pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
 pub use player_type::Player;
@@ -100,6 +102,7 @@ pub enum Reducer {
         name: String,
         room: String,
     },
+    NextRound,
     RemoveTeleporter {
         number: u32,
     },
@@ -123,6 +126,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::DeliverScript { .. } => "deliver_script",
             Reducer::FailJob { .. } => "fail_job",
             Reducer::Join { .. } => "join",
+            Reducer::NextRound => "next_round",
             Reducer::RemoveTeleporter { .. } => "remove_teleporter",
             Reducer::SetRoomSettings { .. } => "set_room_settings",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
@@ -160,6 +164,7 @@ impl __sdk::Reducer for Reducer {
                 name: name.clone(),
                 room: room.clone(),
             }),
+            Reducer::NextRound => __sats::bsatn::to_vec(&next_round_reducer::NextRoundArgs {}),
             Reducer::RemoveTeleporter { number } => {
                 __sats::bsatn::to_vec(&remove_teleporter_reducer::RemoveTeleporterArgs {
                     number: number.clone(),
