@@ -24,10 +24,16 @@ The first player in creates the room and is its **owner**. The owner sets:
 - **House bot**: whether the built-in reference bot fights in every match.
   On by default, so a room can be played alone. It takes an edge no player
   is using, so with four players it sits out.
+- **Teleporters**: up to eight pads, anywhere on the roof a bot can stand,
+  at least 2.5 units apart. The owner places and removes them by clicking
+  the roof while everybody is prompting. Each pad shows its number, which is
+  what prompts and scripts call it, and which decides where it leads: to the
+  pad with the next number. None by default.
 
 Changes apply from the next match. The owner stays the owner while anybody is
 in the room, even while they are away themselves. A room everybody has left
-goes to the next player who enters it, with the settings back to default.
+goes to the next player who enters it, with the settings back to default and
+the teleporters gone.
 
 ## Round loop
 
@@ -58,6 +64,17 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 
 One action per tick: a bot cannot walk and punch at once.
 
+**Teleporting** is not an action: it happens to a bot. The pads form a ring
+by number. A bot whose centre comes within a pad's radius (0.9) is taken, in
+that same tick, to the exact centre of the pad with the next number: 1 leads
+to 2, 2 to 3, and the highest number back to the lowest. A removed pad leaves
+a gap in the numbers, which the ring skips. It makes no difference how the bot
+got there, so a bot can shove an enemy onto a pad. This is part of moving:
+punches land after it, where the bots have ended up. The bot that came out is
+standing on a pad again, and that pad leaves it alone until it has stepped
+off: from the next tick on it is free to walk away, and walking back on takes
+it one pad further. A lone pad leads nowhere.
+
 Dash is the original sketch's **run**; stamina is what it costs.
 
 ### The script contract
@@ -67,11 +84,12 @@ function tick(state)
   -- state.tick                      current tick, starting at 1
   -- state.me      { id, x, y, hp, stamina, cooldown }
   -- state.enemies { { id, x, y, hp, stamina, dist }, ... }   living enemies only
+  -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
   --                 attack_damage, attack_cooldown, max_hp, max_stamina,
   --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
-  --                 dash_speed }
+  --                 dash_speed, teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -124,7 +142,11 @@ there are no panels.
   (they joined while a match was already running). The house bot is listed
   too while it is part of the game.
 - **Room settings**: top left, for the room's owner only and only during
-  prompting: the controls for match length and house bot.
+  prompting: the controls for match length and house bot, and the switch
+  that turns clicks on the roof into placing and removing teleporters.
+- **Teleporters**: a dark pad with glowing segments and its number, modelled
+  in Blender (`assets/blender/teleporter.py`). When a pad takes a bot, a flame
+  shoots up from it and from the pad the bot comes out of.
 - **Arena overlays**: name and health bar above each bot, the big countdown
   and result text, and (top left, during and after a fight) scripts that broke.
 
