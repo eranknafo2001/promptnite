@@ -47,6 +47,8 @@ use spacetimedb::{
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
 const RESULTS: Duration = Duration::from_secs(8);
+/// The round a new room starts in, and one everybody left starts over from.
+const FIRST_ROUND: u32 = 1;
 const MAX_PROMPT_CHARS: usize = 2_000;
 const MAX_NAME_CHARS: usize = 24;
 const MAX_ROOM_CHARS: usize = 24;
@@ -465,6 +467,14 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
                 .room_id()
                 .filter(room.id)
                 .any(|other| other.online && other.id != player.id);
+            // Calling `join` again while still in the room is not leaving it.
+            let here = player.online && player.room_id == room.id;
+            let room = if deserted && !here {
+                // Nobody was here to see the last match: start over.
+                reset_room(ctx, room)
+            } else {
+                room
+            };
             if deserted && room.owner != player.id {
                 // Everybody left: to the newcomer this is a new room.
                 ctx.db.room().id().update(Room {
@@ -483,7 +493,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
             owner: player.id,
             match_secs: rules::DEFAULT_MATCH_SECS,
             house_bot: true,
-            round: 1,
+            round: FIRST_ROUND,
             phase: Phase::Prompting,
             phase_ends_at: None,
             match_ticks: 0,
@@ -1447,6 +1457,46 @@ fn player_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
         return Err("The round already started; wait for the next one".into());
     }
     Ok((player, room))
+}
+
+/// Put a room everybody left back to how a new one starts: first round,
+/// waiting for prompts, no match to show (so no tombstones from a fight the
+/// newcomer never saw). The settings and the kept scripts are not touched.
+fn reset_room(ctx: &ReducerContext, room: Room) -> Room {
+    let room_id = room.id;
+    // A timer of the old match must not move the new first round along.
+    let timers: Vec<u64> = ctx
+        .db
+        .phase_timer()
+        .iter()
+        .filter(|timer| timer.room_id == room_id)
+        .map(|timer| timer.scheduled_id)
+        .collect();
+    for id in timers {
+        ctx.db.phase_timer().scheduled_id().delete(id);
+    }
+    // Nor may an old entry count as ready in it.
+    let entries: Vec<u32> = ctx
+        .db
+        .submission()
+        .room_id()
+        .filter(room_id)
+        .map(|row| row.player_id)
+        .collect();
+    for player_id in entries {
+        ctx.db.submission().player_id().delete(player_id);
+        ctx.db.agent_job().player_id().delete(player_id);
+    }
+    ctx.db.frame().room_id().delete(room_id);
+    ctx.db.match_fault().room_id().delete(room_id);
+    ctx.db.room().id().update(Room {
+        round: FIRST_ROUND,
+        phase: Phase::Prompting,
+        phase_ends_at: None,
+        match_ticks: 0,
+        winner: None,
+        ..room
+    })
 }
 
 /// Remove everything a player submitted, the kept script included.
