@@ -434,6 +434,12 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             position: Vec3::new(radius * angle.cos(), 0.5, radius * angle.sin()),
             radius: 0.5,
             hp: hp as i32,
+            // Drained by the brawl, a different amount for everybody.
+            stamina: if hp > 0.0 && t > WALK_IN {
+                0.55 + 0.4 * (t * 0.9 + i as f32 * 1.7).sin()
+            } else {
+                1.0
+            },
             action,
         });
     }

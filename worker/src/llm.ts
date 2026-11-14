@@ -76,18 +76,23 @@ Both state.me and each enemy expose max_hp, walk_speed, attack_damage, attack_ra
 Define one global function, \`tick(state)\`. The game calls it once per simulation step and uses the returned table as the bot's action for that step:
 
 - \`{ action = "walk", dx = <number>, dy = <number> }\` walks one step in the direction (dx, dy). Only the direction matters, not the length.
-- \`{ action = "attack" }\` punches the nearest enemy within \`state.rules.attack_range\`. It misses if nobody is in range and does nothing while \`state.me.cooldown > 0\`.
+- \`{ action = "dash", dx = <number>, dy = <number> }\` is a walk that covers three times the distance (\`state.rules.dash_speed\`) and costs \`state.rules.dash_stamina_cost\` stamina. With less stamina than that it is an ordinary walk.
+- \`{ action = "attack" }\` punches the nearest enemy within \`state.rules.attack_range\` and costs \`state.rules.attack_stamina_cost\` stamina, hit or miss. It misses if nobody is in range and does nothing while \`state.me.cooldown > 0\` or \`state.me.stamina\` is below the cost.
 - \`{ action = "idle" }\` (or returning nil) does nothing.
 
 A bot does exactly one of these per tick: it cannot walk and attack in the same tick.
 
+## Stamina
+
+Every bot, whatever its build, starts with \`state.rules.max_stamina\` (100) stamina and never holds more. A dash costs 20 and a swing costs 15. On every tick a bot spends none (walking, idling, or asking for something it cannot do) it gets \`state.rules.stamina_regen\` (2) back. A bot that swings every time its cooldown allows spends more than it gets back and runs dry, after which it can only swing every few ticks, so pace attacks and dashes: check \`state.me.stamina\` before relying on either, and back off or walk to recover. Enemies' stamina is visible, so a bot can tell when an enemy is too tired to swing or dash.
+
 \`state\` is rebuilt every tick:
 
 - \`state.tick\`: current step, starting at 1.
-- \`state.me\`: \`{ id, x, y, hp, cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again.
-- \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
+- \`state.me\`: \`{ id, x, y, hp, stamina, cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again.
+- \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, stamina, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
 - \`state.arena\`: \`{ half_size }\`. The arena spans -half_size..half_size on both axes and bots cannot leave it. Up to four bots fight, each starting at the middle of a different edge.
-- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp }\`. \`walk_speed\` is in units per second.
+- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp, max_stamina, stamina_regen, attack_stamina_cost, dash_stamina_cost, dash_speed }\`. \`walk_speed\` and \`dash_speed\` are in units per second.
 
 The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the most hp wins.
 
