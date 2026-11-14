@@ -250,6 +250,16 @@ impl Snapshot {
         self.game.owner == self.me.id
     }
 
+    /// The owner starts the next round. While they are away nobody else could,
+    /// so until they are back anybody in the room may.
+    fn can_start_next_round(&self) -> bool {
+        let owner_here = self
+            .players
+            .iter()
+            .any(|player| player.id == self.game.owner && player.online);
+        self.i_own_the_room() || !owner_here
+    }
+
     fn can_edit_room_settings(&self) -> bool {
         self.i_own_the_room()
             && self.game.phase == Phase::Prompting
@@ -480,7 +490,7 @@ fn draw(
         (Phase::Countdown | Phase::Fighting, _) => {}
         (Phase::Results, _) => {
             let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
-            if snapshot.i_own_the_room() {
+            if snapshot.can_start_next_round() {
                 egui::Area::new(egui::Id::new("next_round"))
                     .anchor(
                         egui::Align2::CENTER_BOTTOM,

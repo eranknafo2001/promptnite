@@ -47,7 +47,8 @@ the teleporters gone.
    intervene.
 5. **Results** — bots, tombstones and combat effects are cleared from the
    arena; teleporters stay in place. The winner and final stats stay on screen until the room owner clicks
-   **Next round**, returning everyone to prompting at step 1.
+   **Next round**, returning everyone to prompting at step 1. While the owner
+   is away, anybody in the room can click it instead.
 
 A player who sends the same prompt again, unchanged, keeps the bot they had:
 the module reuses the script and the agent is not asked. Any change to the
@@ -268,7 +269,8 @@ Decisions worth knowing about:
 - **Rooms**: anybody who knows or guesses a room id can walk in. A list of
   rooms, private rooms and matchmaking come later. Rooms are never deleted.
 - **Absent owner**: if the owner leaves while others stay, nobody can change
-  the settings until the owner is back or the room empties.
+  the settings until the owner is back or the room empties. The rounds go on:
+  anybody can start the next one.
 - **Identity**: the browser keeps your player for the tab session; the desktop
   client is a new player on every launch.
 - **Agent time limit**: the Worker finishes in the background after answering

@@ -630,11 +630,19 @@ pub fn set_room_settings(
     Ok(())
 }
 
-/// Start another round when the room owner is ready.
+/// Start another round when the room owner is ready. An owner who is away
+/// can't be, and must not hold the others at the results: until they are
+/// back, anybody in the room may start it.
 #[reducer]
 pub fn next_round(ctx: &ReducerContext) -> Result<(), String> {
     let (player, room) = player_in_room(ctx)?;
-    if room.owner != player.id {
+    let owner_here = ctx
+        .db
+        .player()
+        .id()
+        .find(room.owner)
+        .is_some_and(|owner| owner.online && owner.room_id == room.id);
+    if room.owner != player.id && owner_here {
         return Err("Only the room's owner can start the next round".into());
     }
     if room.phase != Phase::Results {
