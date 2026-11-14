@@ -396,7 +396,13 @@ fn draw(
                 screen.shrink(EDGE)
             } else if compact {
                 // A sheet along the bottom, under whatever is stacked above.
-                let height = (screen.height() * 0.38).clamp(190.0, 340.0);
+                let mut height = (screen.height() * 0.38).clamp(190.0, 340.0);
+                // Room to read what went wrong and still see the prompt.
+                let problem =
+                    error.is_some_and(|why| !why.is_empty()) || snapshot.prompt_refusal.is_some();
+                if problem {
+                    height += 100.0;
+                }
                 let top = top.max(screen.bottom() - EDGE - height);
                 egui::Rect::from_min_max(
                     egui::pos2(screen.left() + EDGE, top),
@@ -1789,13 +1795,19 @@ fn bot_row(
         egui::FontId::proportional(theme::SIZE_SMALL),
         theme::INK_MUTED,
     );
-    let name_column =
-        egui::Rect::from_x_y_ranges(at.x..=health.left() - 6.0, name_y - 12.0..=name_y + 12.0);
-    painter.with_clip_rect(name_column).text(
-        egui::pos2(at.x + DOT + 8.0, name_y),
-        egui::Align2::LEFT_CENTER,
-        snapshot.name_of(bot.id),
+    // A name too long for its column ends in "…" short of the health.
+    let name_left = at.x + DOT + 8.0;
+    let mut name = egui::text::LayoutJob::simple_singleline(
+        snapshot.name_of(bot.id).to_string(),
         egui::FontId::proportional(theme::SIZE_BODY),
+        ink,
+    );
+    name.wrap =
+        egui::text::TextWrapping::truncate_at_width((health.left() - 8.0 - name_left).max(0.0));
+    let name = painter.layout_job(name);
+    painter.galley(
+        egui::pos2(name_left, name_y - name.size().y / 2.0),
+        name,
         ink,
     );
 
