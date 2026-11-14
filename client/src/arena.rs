@@ -699,7 +699,13 @@ pub fn point_of_view(
     } else {
         View {
             eye: view.eye,
-            focus: view.focus,
+            // Look slightly lower to lift the rooftop above the desktop tabs.
+            focus: view.focus
+                - if matches!(snapshot.game.phase, Phase::Fighting | Phase::Results) {
+                    Vec3::Y * 4.5
+                } else {
+                    Vec3::ZERO
+                },
         }
     };
     let (eye, focus) = place(&view, snapshot.me.edge);
