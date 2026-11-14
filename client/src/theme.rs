@@ -72,6 +72,10 @@ pub const SLASH: Color = Color::srgb(1.0, 0.85, 0.65);
 /// The bubble round a bot whose shield is up: a see-through cold blue.
 pub const SHIELD: Color = Color::srgba(0.55, 0.85, 1.0, 0.35);
 
+/// A teleporter pad: its dark dish, and the light of its segments and flame.
+pub const TELEPORTER_METAL: Color = Color::srgb(0.2, 0.23, 0.27);
+pub const TELEPORTER_GLOW: Color = Color::srgb(0.1, 0.88, 1.0);
+
 pub const BOT_DEAD: Color = Color::srgb(0.25, 0.25, 0.27);
 
 /// Colours are assigned by bot id, so a player keeps theirs between rounds.
@@ -103,6 +107,8 @@ pub const TEXT_DEAD: Color32 = Color32::GRAY;
 /// Dark enough to read on a white panel.
 pub const GOOD: Color32 = Color32::from_rgb(0x1f, 0x8a, 0x3d);
 pub const BAD: Color32 = Color32::from_rgb(0xcf, 0x3a, 0x2a);
+/// Where a new teleporter would land, while the owner places them.
+pub const TELEPORTER_RING: Color32 = Color32::from_rgb(0x4f, 0xe6, 0xff);
 /// Error panels: a soft brick red, so it reads as a problem without shouting.
 pub const ERROR_FILL: Color32 = Color32::from_rgb(0xd2, 0x5c, 0x4d);
 pub const ERROR_TEXT: Color32 = Color32::WHITE;

@@ -28,7 +28,7 @@ use promptnite_bindings::*;
 
 use crate::{
     arena::{ArenaCamera, BotView, Replay},
-    clipboard,
+    clipboard, teleporter,
     theme::{self, EDGE, bot_color, box_frame, pill, small},
 };
 
@@ -74,9 +74,22 @@ pub enum Screen {
 /// What the player asked for. Carried out by `net` (or `sandbox`).
 #[derive(Message, Clone)]
 pub enum Action {
-    Join { name: String, room: String },
+    Join {
+        name: String,
+        room: String,
+    },
     SubmitPrompt(String),
-    SetRoomSettings { match_secs: u32, house_bot: bool },
+    SetRoomSettings {
+        match_secs: u32,
+        house_bot: bool,
+    },
+    /// Put a teleporter on the floor at sim `(x, y)`.
+    AddTeleporter {
+        x: f32,
+        y: f32,
+    },
+    /// Take the teleporter with this number away.
+    RemoveTeleporter(u32),
 }
 
 #[derive(Resource, Default)]
@@ -97,6 +110,9 @@ struct Form {
     mac: bool,
     /// The prompt help popup is open.
     help: bool,
+    /// The owner is placing teleporters: clicks on the roof add and remove
+    /// pads.
+    placing: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +174,8 @@ pub struct Snapshot {
     /// This round's.
     pub submissions: Vec<Submission>,
     pub faults: Vec<MatchFault>,
+    /// The room's teleporter pads, by number.
+    pub teleporters: Vec<Teleporter>,
     pub me: Player,
     /// Why the server would not take our last prompt at all (sent too soon
     /// after the one before, the agents are busy, ...).
@@ -259,6 +277,15 @@ fn draw(
     background.multiply_opacity(dim);
 
     let (camera, camera_transform) = *camera;
+    // Only the owner moves the pads, and only while the next match is still
+    // to be set up.
+    let game = &snapshot.game;
+    form.placing &= game.phase == Phase::Prompting && snapshot.i_own_the_room() && !form.help;
+    if form.placing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        form.placing = false;
+    }
+    let view = (camera, camera_transform);
+    teleporters(ctx, &background, snapshot, view, form.placing, &mut actions);
     bot_markers(&background, &replay, camera, camera_transform);
     bot_cards(&background, screen, snapshot, &replay);
     banner(&background, screen, snapshot, &replay);
@@ -266,9 +293,8 @@ fn draw(
     faults(ctx, snapshot, &replay, clock);
     let roster = roster(&background, screen, snapshot, &replay);
 
-    let game = &snapshot.game;
     if game.phase == Phase::Prompting && snapshot.i_own_the_room() {
-        room_settings(ctx, game, dim, &mut actions);
+        room_settings(ctx, snapshot, dim, &mut form.placing, &mut actions);
     }
     let submission = snapshot.submission_of(snapshot.me.id);
     // Whatever the phase: the last bot ready starts the countdown at once.
@@ -624,7 +650,14 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
 
 /// The room's settings, top left. Only the owner gets them, and only while
 /// prompting: that is when the next match is still to be set up.
-fn room_settings(ctx: &egui::Context, game: &Room, dim: f32, actions: &mut MessageWriter<Action>) {
+fn room_settings(
+    ctx: &egui::Context,
+    snapshot: &Snapshot,
+    dim: f32,
+    placing: &mut bool,
+    actions: &mut MessageWriter<Action>,
+) {
+    let game = &snapshot.game;
     egui::Area::new(egui::Id::new("room_settings"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
         .interactable(dim == 1.0)
@@ -654,6 +687,18 @@ fn room_settings(ctx: &egui::Context, game: &Room, dim: f32, actions: &mut Messa
                         match_secs: game.match_secs,
                         house_bot,
                     });
+                }
+                ui.horizontal(|ui| {
+                    let count = snapshot.teleporters.len();
+                    ui.label(small(format!("Teleporters {count}/{}", teleporter::MAX)));
+                    let label = if *placing { "Done" } else { "Place" };
+                    if ui.selectable_label(*placing, label).clicked() {
+                        *placing = !*placing;
+                    }
+                });
+                if *placing {
+                    ui.label(small("Click the roof to add a pad."));
+                    ui.label(small("Click a pad to take it away."));
                 }
             });
         });
@@ -709,6 +754,7 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                 for line in [
                     "Where it is, its hp and stamina, and how long until it can punch again",
                     "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
+                    "Where the numbered teleporters are and where each one leads",
                     "The arena's size, the time, and the rules: speed, punch range, damage",
                     "Anything it chose to remember from earlier in the match",
                 ] {
@@ -719,7 +765,8 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
                     "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
                      wait: one per tick. Dashes, punches and the shield cost stamina, which \
                      comes back on ticks it does none of them. A shield stops every hit but \
-                     slows the bot to half speed. It can't see other prompts or when enemies can punch next.",
+                     slows the bot to half speed. A teleporter takes any bot that gets onto \
+                     it to the next number, and the last one back to 1. It can't see other prompts or when enemies can punch next.",
                 ));
 
                 ui.add_space(14.0);
@@ -1035,6 +1082,107 @@ fn shadowed_text(
         theme::TEXT_SHADOW,
     );
     painter.text(at, egui::Align2::CENTER_CENTER, text, font, color);
+}
+
+/// The number on every teleporter and, while the owner is placing them,
+/// what a click under the cursor would do: a ring where a new pad would
+/// land, or around the pad it would take away.
+fn teleporters(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    snapshot: &Snapshot,
+    (camera, camera_transform): (&Camera, &GlobalTransform),
+    placing: bool,
+    actions: &mut MessageWriter<Action>,
+) {
+    // The arena camera covers the whole window, so its viewport coordinates
+    // are egui coordinates. Sim (x, y) is the ground plane; Bevy's up is Y.
+    let on_screen = |x: f32, y: f32| {
+        camera
+            .world_to_viewport(camera_transform, Vec3::new(x, 0.1, y))
+            .ok()
+            .map(|at| egui::pos2(at.x, at.y))
+    };
+    let pads = &snapshot.teleporters;
+    for pad in pads {
+        if let Some(at) = on_screen(pad.x, pad.y) {
+            let number = pad.number.to_string();
+            shadowed_text(painter, at, number, theme::SIZE_HEADING, theme::TEXT);
+        }
+    }
+
+    if !placing || ctx.is_pointer_over_egui() {
+        return;
+    }
+    let Some(cursor) = ctx.pointer_hover_pos() else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(camera_transform, Vec2::new(cursor.x, cursor.y)) else {
+        return;
+    };
+    let Some(distance) = ray.intersect_plane(Vec3::ZERO, InfinitePlane3d::new(Vec3::Y)) else {
+        return;
+    };
+    let ground = ray.get_point(distance);
+    let (x, y) = (ground.x, ground.z);
+    let half = snapshot.game.arena_half_size;
+    if x.abs() > half || y.abs() > half {
+        return; // not over the roof
+    }
+
+    let hovered = pads
+        .iter()
+        .find(|pad| (pad.x - x).hypot(pad.y - y) < teleporter::RADIUS);
+    let (centre, hint, action) = match hovered {
+        Some(pad) => (
+            (pad.x, pad.y),
+            Some("Take away"),
+            Some(Action::RemoveTeleporter(pad.number)),
+        ),
+        None => match teleporter::refusal(pads, x, y) {
+            Some(reason) => ((x, y), Some(reason), None),
+            None => ((x, y), None, Some(Action::AddTeleporter { x, y })),
+        },
+    };
+    let adding = hovered.is_none() && action.is_some();
+    let colour = if adding {
+        theme::TELEPORTER_RING
+    } else {
+        theme::BAD
+    };
+
+    const CORNERS: usize = 40;
+    let ring: Vec<egui::Pos2> = (0..CORNERS)
+        .filter_map(|i| {
+            let angle = std::f32::consts::TAU * i as f32 / CORNERS as f32;
+            let (sin, cos) = angle.sin_cos();
+            on_screen(
+                centre.0 + teleporter::RADIUS * cos,
+                centre.1 + teleporter::RADIUS * sin,
+            )
+        })
+        .collect();
+    if ring.len() == CORNERS {
+        painter.add(egui::Shape::convex_polygon(
+            ring,
+            colour.gamma_multiply(0.25),
+            egui::Stroke::new(2.5, colour),
+        ));
+    }
+    if let Some(hint) = hint {
+        let at = cursor + egui::vec2(0.0, -28.0);
+        shadowed_text(painter, at, hint.into(), theme::SIZE_SMALL, theme::TEXT);
+    }
+    ctx.set_cursor_icon(if action.is_some() {
+        egui::CursorIcon::PointingHand
+    } else {
+        egui::CursorIcon::NotAllowed
+    });
+    if let Some(action) = action
+        && ctx.input(|input| input.pointer.primary_clicked())
+    {
+        actions.write(action);
+    }
 }
 
 /// A down-pointing triangle in the bot's colour floating above every bot

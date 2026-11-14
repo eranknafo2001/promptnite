@@ -27,7 +27,10 @@ use piccolo::{
     StashedExecutor, StashedFunction, Table, Value, constant::Constant, opcode::Operation, stdlib,
 };
 
-use crate::{rules, sim::Action};
+use crate::{
+    rules,
+    sim::{Action, Teleporter},
+};
 
 /// What a bot can see when it decides its action.
 pub struct BotView<'a> {
@@ -38,6 +41,8 @@ pub struct BotView<'a> {
     pub cooldown: u32,
     /// Living enemies only.
     pub enemies: &'a [Seen],
+    /// Sorted by id.
+    pub teleporters: &'a [Teleporter],
 }
 
 #[derive(Clone, Copy)]
@@ -355,6 +360,21 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
     }
     set(ctx, state, "enemies", enemies);
 
+    let teleporters = Table::new(&ctx);
+    for (i, pad) in view.teleporters.iter().enumerate() {
+        let row = Table::new(&ctx);
+        set(ctx, row, "id", pad.id as i64);
+        set(ctx, row, "x", pad.x as f64);
+        set(ctx, row, "y", pad.y as f64);
+        let dist = ((pad.x - view.me.x).powi(2) + (pad.y - view.me.y).powi(2)).sqrt();
+        set(ctx, row, "dist", dist as f64);
+        if let Some(exit) = crate::sim::exit_pad(view.teleporters, i) {
+            set(ctx, row, "to", exit.id as i64);
+        }
+        let _ = teleporters.set(ctx, (i + 1) as i64, row);
+    }
+    set(ctx, state, "teleporters", teleporters);
+
     let arena = Table::new(&ctx);
     set(ctx, arena, "half_size", rules::ARENA_HALF_SIZE as f64);
     set(ctx, state, "arena", arena);
@@ -399,6 +419,7 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         "shield_speed",
         (view.me.stats.walk_speed * rules::SHIELD_SPEED_FACTOR) as f64,
     );
+    set(ctx, r, "teleporter_radius", rules::TELEPORTER_RADIUS as f64);
     set(ctx, state, "rules", r);
 
     state

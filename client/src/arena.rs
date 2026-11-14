@@ -39,7 +39,16 @@ pub struct BotView {
     /// How much of its full stamina the bot has left, `0.0..=1.0`.
     pub stamina: f32,
     pub action: BotAction,
+    /// Set for the one tick in which the bot jumps between two teleporters:
+    /// the centres of the pad that took it and the pad it comes out of.
+    pub teleport: Option<(Vec3, Vec3)>,
 }
+
+/// A bot that a teleporter took is on the exact centre of the pad it came out
+/// of. So is one that has not moved since, which this tells apart: every jump
+/// is longer (`TELEPORTER_SPACING` less `TELEPORTER_RADIUS` in
+/// `sim/src/rules.rs`, less the step that took the bot onto the pad).
+const TELEPORT_JUMP: f32 = 0.5;
 
 /// The camera that looks at the arena (as opposed to the UI camera).
 #[derive(Component)]
@@ -729,8 +738,29 @@ pub fn replay(
             .as_ref()
             .and_then(|frame| frame.bots.iter().find(|b| b.player_id == bot.player_id))
             .unwrap_or(bot);
-        let x = bot.x + (next.x - bot.x) * blend;
-        let y = bot.y + (next.y - bot.y) * blend;
+        // Pads are a ring: the one a bot comes out of tells which it went in.
+        let pads = &snapshot.teleporters;
+        let teleport = pads
+            .iter()
+            .position(|pad| (pad.x, pad.y) == (next.x, next.y))
+            .filter(|_| (next.x - bot.x).hypot(next.y - bot.y) > TELEPORT_JUMP)
+            .map(|exit| {
+                let entry = &pads[(exit + pads.len() - 1) % pads.len()];
+                (
+                    Vec3::new(entry.x, 0.0, entry.y),
+                    Vec3::new(next.x, 0.0, next.y),
+                )
+            });
+        let jumped = teleport.is_some();
+        let (x, y) = match (jumped, blend < 0.5) {
+            // A jump is not a slide: here for half the tick, then there.
+            (true, true) => (bot.x, bot.y),
+            (true, false) => (next.x, next.y),
+            (false, _) => (
+                bot.x + (next.x - bot.x) * blend,
+                bot.y + (next.y - bot.y) * blend,
+            ),
+        };
         let id = bot.player_id;
         // Blended like the position, so the bar drains and fills smoothly.
         let stamina = stamina_of(&from, id).zip(opening.as_ref().and_then(|f| stamina_of(f, id)));
@@ -751,6 +781,7 @@ pub fn replay(
             hp: next.hp,
             stamina,
             action: next.action,
+            teleport,
         });
     }
 }

@@ -6,6 +6,7 @@
 #![allow(unused, clippy::all)]
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
+pub mod add_teleporter_reducer;
 pub mod agent_budget_type;
 pub mod agent_call_type;
 pub mod agent_job_type;
@@ -28,14 +29,18 @@ pub mod phase_timer_type;
 pub mod phase_type;
 pub mod player_type;
 pub mod prompt_limit_type;
+pub mod remove_teleporter_reducer;
 pub mod room_players_table;
 pub mod room_submissions_table;
+pub mod room_teleporters_table;
 pub mod room_type;
 pub mod set_room_settings_reducer;
 pub mod submission_status_type;
 pub mod submission_type;
 pub mod submit_prompt_reducer;
+pub mod teleporter_type;
 
+pub use add_teleporter_reducer::add_teleporter;
 pub use agent_budget_type::AgentBudget;
 pub use agent_call_type::AgentCall;
 pub use agent_job_type::AgentJob;
@@ -58,13 +63,16 @@ pub use phase_timer_type::PhaseTimer;
 pub use phase_type::Phase;
 pub use player_type::Player;
 pub use prompt_limit_type::PromptLimit;
+pub use remove_teleporter_reducer::remove_teleporter;
 pub use room_players_table::*;
 pub use room_submissions_table::*;
+pub use room_teleporters_table::*;
 pub use room_type::Room;
 pub use set_room_settings_reducer::set_room_settings;
 pub use submission_status_type::SubmissionStatus;
 pub use submission_type::Submission;
 pub use submit_prompt_reducer::submit_prompt;
+pub use teleporter_type::Teleporter;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -74,6 +82,10 @@ pub use submit_prompt_reducer::submit_prompt;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
+    AddTeleporter {
+        x: f32,
+        y: f32,
+    },
     DeliverScript {
         secret: String,
         job_id: u64,
@@ -87,6 +99,9 @@ pub enum Reducer {
     Join {
         name: String,
         room: String,
+    },
+    RemoveTeleporter {
+        number: u32,
     },
     SetRoomSettings {
         match_secs: u32,
@@ -104,9 +119,11 @@ impl __sdk::InModule for Reducer {
 impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
+            Reducer::AddTeleporter { .. } => "add_teleporter",
             Reducer::DeliverScript { .. } => "deliver_script",
             Reducer::FailJob { .. } => "fail_job",
             Reducer::Join { .. } => "join",
+            Reducer::RemoveTeleporter { .. } => "remove_teleporter",
             Reducer::SetRoomSettings { .. } => "set_room_settings",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
             _ => unreachable!(),
@@ -115,6 +132,12 @@ impl __sdk::Reducer for Reducer {
     #[allow(clippy::clone_on_copy)]
     fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
+            Reducer::AddTeleporter { x, y } => {
+                __sats::bsatn::to_vec(&add_teleporter_reducer::AddTeleporterArgs {
+                    x: x.clone(),
+                    y: y.clone(),
+                })
+            }
             Reducer::DeliverScript {
                 secret,
                 job_id,
@@ -137,6 +160,11 @@ impl __sdk::Reducer for Reducer {
                 name: name.clone(),
                 room: room.clone(),
             }),
+            Reducer::RemoveTeleporter { number } => {
+                __sats::bsatn::to_vec(&remove_teleporter_reducer::RemoveTeleporterArgs {
+                    number: number.clone(),
+                })
+            }
             Reducer::SetRoomSettings {
                 match_secs,
                 house_bot,
@@ -164,6 +192,7 @@ pub struct DbUpdate {
     my_room: __sdk::TableUpdate<Room>,
     room_players: __sdk::TableUpdate<Player>,
     room_submissions: __sdk::TableUpdate<Submission>,
+    room_teleporters: __sdk::TableUpdate<Teleporter>,
 }
 
 impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
@@ -190,6 +219,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "room_submissions" => db_update
                     .room_submissions
                     .append(room_submissions_table::parse_table_update(table_update)?),
+                "room_teleporters" => db_update
+                    .room_teleporters
+                    .append(room_teleporters_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -224,6 +256,8 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.room_players = cache.apply_diff_to_table::<Player>("room_players", &self.room_players);
         diff.room_submissions =
             cache.apply_diff_to_table::<Submission>("room_submissions", &self.room_submissions);
+        diff.room_teleporters =
+            cache.apply_diff_to_table::<Teleporter>("room_teleporters", &self.room_teleporters);
 
         diff
     }
@@ -248,6 +282,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "room_submissions" => db_update
                     .room_submissions
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "room_teleporters" => db_update
+                    .room_teleporters
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => {
                     return Err(
@@ -280,6 +317,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "room_submissions" => db_update
                     .room_submissions
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "room_teleporters" => db_update
+                    .room_teleporters
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => {
                     return Err(
                         __sdk::InternalError::unknown_name("table", unknown, "QueryRows").into(),
@@ -301,6 +341,7 @@ pub struct AppliedDiff<'r> {
     my_room: __sdk::TableAppliedDiff<'r, Room>,
     room_players: __sdk::TableAppliedDiff<'r, Player>,
     room_submissions: __sdk::TableAppliedDiff<'r, Submission>,
+    room_teleporters: __sdk::TableAppliedDiff<'r, Teleporter>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -326,6 +367,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<Submission>(
             "room_submissions",
             &self.room_submissions,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<Teleporter>(
+            "room_teleporters",
+            &self.room_teleporters,
             event,
         );
     }
@@ -994,6 +1040,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         my_room_table::register_table(client_cache);
         room_players_table::register_table(client_cache);
         room_submissions_table::register_table(client_cache);
+        room_teleporters_table::register_table(client_cache);
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "match_faults",
@@ -1002,5 +1049,6 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "my_room",
         "room_players",
         "room_submissions",
+        "room_teleporters",
     ];
 }

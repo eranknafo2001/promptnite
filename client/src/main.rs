@@ -7,6 +7,7 @@
 //!   net.rs    connection to SpacetimeDB, subscriptions, identity token
 //!   arena.rs  3D scene and match replay
 //!   fx.rs     explosions, debris and camera shake
+//!   teleporter.rs  the pads bots jump between
 //!   ui.rs     egui overlay: name screen, prompt box, status lines
 //!   clipboard.rs  copy, cut and paste in the text boxes
 //!   theme.rs  colours, type sizes and boxes: the look in one place
@@ -19,6 +20,7 @@ mod fx;
 mod logs;
 mod net;
 mod sandbox;
+mod teleporter;
 mod theme;
 mod ui;
 
@@ -62,6 +64,7 @@ fn main() {
         .add_plugins((
             arena::plugin,
             fx::plugin,
+            teleporter::plugin,
             ui::plugin,
             clipboard::plugin,
             logs::plugin,

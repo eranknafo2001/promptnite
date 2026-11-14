@@ -77,6 +77,17 @@ pub const DASH_STAMINA_COST: i32 = 20;
 
 /// A `dash` covers this many times the distance of a `walk`.
 pub const DASH_SPEED_FACTOR: f32 = 3.0;
+// --- Teleporters -----------------------------------------------------------
+
+/// Most teleporter pads a room's owner may place.
+pub const MAX_TELEPORTERS: usize = 8;
+
+/// Radius of a pad (the client's model, `assets/blender/teleporter.py`). A
+/// bot whose centre is this close to a pad's centre is on it, and teleports.
+pub const TELEPORTER_RADIUS: f32 = 0.9;
+
+/// Two pads' centres are at least this far apart, so pads never overlap.
+pub const TELEPORTER_SPACING: f32 = 2.5;
 
 /// What every tick with the shield up costs. A bot with less cannot raise
 /// it. More than a tick wins back, so no bot hides behind it for ever.

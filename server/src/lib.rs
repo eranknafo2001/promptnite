@@ -340,6 +340,22 @@ fn frame_key(room_id: u32, tick: u32) -> u64 {
     (room_id as u64) << 32 | tick as u64
 }
 
+/// A pad the room's owner put on the arena floor. A bot that gets onto one
+/// comes out of the next by number. Private, served by `room_teleporters`.
+#[table(accessor = teleporter)]
+pub struct Teleporter {
+    /// `frame_key(room_id, number)`.
+    #[primary_key]
+    key: u64,
+    #[index(btree)]
+    room_id: u32,
+    /// Counts from 1 within the room. Shown on the pad, and what a bot's
+    /// script calls it.
+    number: u32,
+    x: f32,
+    y: f32,
+}
+
 /// First script error of each bot in a room's current match. Private, served
 /// by `match_faults`.
 #[table(accessor = match_fault)]
@@ -491,6 +507,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
             };
             if deserted && room.owner != player.id {
                 // Everybody left: to the newcomer this is a new room.
+                ctx.db.teleporter().room_id().delete(room.id);
                 ctx.db.room().id().update(Room {
                     owner: player.id,
                     match_secs: rules::DEFAULT_MATCH_SECS,
@@ -607,6 +624,64 @@ pub fn set_room_settings(
     });
     // Switching the house bot on may be all a lone, ready player was missing.
     try_start_match(ctx, room_id);
+    Ok(())
+}
+
+/// Put a teleporter pad on the arena floor. Owner only, between matches.
+#[reducer]
+pub fn add_teleporter(ctx: &ReducerContext, x: f32, y: f32) -> Result<(), String> {
+    let (player, room) = owner_in_prompting(ctx)?;
+    // A bot has to be able to stand on the pad's centre.
+    let limit = rules::BOT_LIMIT;
+    if !(x.abs() <= limit && y.abs() <= limit) {
+        return Err("A teleporter must stand on the arena floor".into());
+    }
+    let pads: Vec<Teleporter> = ctx.db.teleporter().room_id().filter(room.id).collect();
+    if pads.len() >= rules::MAX_TELEPORTERS {
+        return Err(format!(
+            "A room can have at most {} teleporters",
+            rules::MAX_TELEPORTERS
+        ));
+    }
+    let crowded = |pad: &Teleporter| {
+        (pad.x - x).powi(2) + (pad.y - y).powi(2) < rules::TELEPORTER_SPACING.powi(2)
+    };
+    if pads.iter().any(crowded) {
+        return Err("Too close to another teleporter".into());
+    }
+    // The smallest number not in use, so the pads stay 1, 2, 3...
+    let number = (1..)
+        .find(|n| pads.iter().all(|pad| pad.number != *n))
+        .expect("fewer pads than numbers");
+    emit(
+        ctx,
+        Level::Info,
+        "teleporter added",
+        json!({ "player_id": player.id, "room_id": room.id, "number": number, "x": x, "y": y }),
+    );
+    ctx.db.teleporter().insert(Teleporter {
+        key: frame_key(room.id, number),
+        room_id: room.id,
+        number,
+        x,
+        y,
+    });
+    Ok(())
+}
+
+/// Take a teleporter pad away again. Owner only, between matches.
+#[reducer]
+pub fn remove_teleporter(ctx: &ReducerContext, number: u32) -> Result<(), String> {
+    let (player, room) = owner_in_prompting(ctx)?;
+    if !ctx.db.teleporter().key().delete(frame_key(room.id, number)) {
+        return Err(format!("There is no teleporter {number}"));
+    }
+    emit(
+        ctx,
+        Level::Info,
+        "teleporter removed",
+        json!({ "player_id": player.id, "room_id": room.id, "number": number }),
+    );
     Ok(())
 }
 
@@ -1056,7 +1131,24 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
     // Nobody can influence a match after this point, so simulate all of it now
     // and let clients replay the frames.
     let seed = ctx.timestamp.to_micros_since_unix_epoch() as u64;
-    let outcome = sim::run_match(&bots, seed, room.match_secs * rules::TICKS_PER_SEC);
+    let mut teleporters: Vec<sim::Teleporter> = ctx
+        .db
+        .teleporter()
+        .room_id()
+        .filter(room_id)
+        .map(|pad| sim::Teleporter {
+            id: pad.number,
+            x: pad.x,
+            y: pad.y,
+        })
+        .collect();
+    teleporters.sort_by_key(|pad| pad.id);
+    let outcome = sim::run_match(
+        &bots,
+        &teleporters,
+        seed,
+        room.match_secs * rules::TICKS_PER_SEC,
+    );
 
     ctx.db.frame().room_id().delete(room_id);
     ctx.db.match_fault().room_id().delete(room_id);
@@ -1437,6 +1529,15 @@ fn match_frames(ctx: &ViewContext) -> Vec<Frame> {
     }
 }
 
+/// The teleporter pads of the caller's room.
+#[view(accessor = room_teleporters, public)]
+fn room_teleporters(ctx: &ViewContext) -> Vec<Teleporter> {
+    match callers_room(ctx) {
+        Some(room) => ctx.db.teleporter().room_id().filter(room.id).collect(),
+        None => Vec::new(),
+    }
+}
+
 /// Script errors in the match of the caller's room, once the fight started.
 #[view(accessor = match_faults, public)]
 fn match_faults(ctx: &ViewContext) -> Vec<MatchFault> {
@@ -1472,6 +1573,19 @@ fn player_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
     let (player, room) = player_in_room(ctx)?;
     if room.phase != Phase::Prompting {
         return Err("The round already started; wait for the next one".into());
+    }
+    Ok((player, room))
+}
+
+/// The caller, if they own their room and it is between matches: teleporters
+/// may not move once bots are fighting around them.
+fn owner_in_prompting(ctx: &ReducerContext) -> Result<(Player, Room), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.owner != player.id {
+        return Err("Only the room's owner can move its teleporters".into());
+    }
+    if room.phase != Phase::Prompting {
+        return Err("Teleporters can only be moved between matches".into());
     }
     Ok((player, room))
 }
