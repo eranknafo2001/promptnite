@@ -22,7 +22,7 @@ mod sandbox;
 mod theme;
 mod ui;
 
-use bevy::{log::LogPlugin, prelude::*};
+use bevy::{asset::AssetMetaCheck, log::LogPlugin, prelude::*};
 
 fn main() {
     let sandbox = sandbox::enabled();
@@ -48,6 +48,14 @@ fn main() {
                 })
                 .set(LogPlugin {
                     custom_layer: logs::layer,
+                    ..default()
+                })
+                // The assets ship without `.meta` files, so never ask for one.
+                // Asking costs a request per asset in the browser, and a server
+                // that answers a missing file with a page instead of a 404
+                // (`trunk serve` does) makes Bevy reject the model.
+                .set(AssetPlugin {
+                    meta_check: AssetMetaCheck::Never,
                     ..default()
                 }),
         )
