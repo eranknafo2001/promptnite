@@ -95,9 +95,9 @@ const COMPOSED_ASPECT: f32 = 1.25;
 fn place(view: &View, edge: u32, size: Vec2) -> (Vec3, Vec3) {
     let (mut eye, focus) = (view.eye, view.focus);
     // A narrow window (a phone held upright): back off until the arena
-    // fits across it again.
+    // fits across it again. Wider windows keep the desktop views as composed.
     let aspect = size.x / size.y.max(1.0);
-    if aspect < COMPOSED_ASPECT {
+    if size.x < crate::ui::COMPACT_WIDTH && aspect < COMPOSED_ASPECT {
         eye = focus + (eye - focus) * (COMPOSED_ASPECT / aspect);
     }
     let outward = outward(edge);
