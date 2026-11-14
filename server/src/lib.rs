@@ -469,7 +469,10 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
                 .any(|other| other.online && other.id != player.id);
             // Calling `join` again while still in the room is not leaving it.
             let here = player.online && player.room_id == room.id;
-            let room = if deserted && !here {
+            // A running match plays on: whoever drops out of it and comes
+            // back, or walks in on it, watches the rest.
+            let fighting = matches!(room.phase, Phase::Countdown | Phase::Fighting);
+            let room = if deserted && !here && !fighting {
                 // Nobody was here to see the last match: start over.
                 reset_room(ctx, room)
             } else {
