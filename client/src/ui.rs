@@ -9,14 +9,12 @@
 //!   |               arena                 |   join screen: boxes in the middle
 //!   |                                     |
 //!   | +---------------------------------+ |
-//!   | | prompt box (bottom 20%)         | |   or a one-line status instead
+//!   | | prompt box                      | |   or a one-line status instead
 //!   | +---------------------------------+ |
 //!   +-------------------------------------+
 //!
-//! A narrow window (a phone held upright, see `COMPACT_WIDTH`) stacks them
-//! instead: the players across the top while a prompt is due, the prompt in
-//! a sheet along the bottom, the bots' health in a strip there once it is
-//! sent.
+//! Narrow windows stack the room header and prompt above the arena. Detailed
+//! player status and owner settings move into the room menu.
 //!
 //! The player goes through two screens: first their name and room, then
 //! (every round) the prompt. Text boxes are 80% opaque so the arena shows through faintly.
@@ -50,6 +48,20 @@ const MAX_PLAYERS: usize = 4;
 const MAX_NAME_CHARS: usize = 24;
 const MAX_ROOM_CHARS: usize = 24;
 const MAX_PROMPT_CHARS: usize = 2_000;
+const JOIN_CONTROL_HEIGHT: f32 = 44.0;
+const JOIN_CONTROL_GAP: f32 = 8.0;
+const BOT_PANEL_WIDTH: f32 = 350.0;
+pub const BOT_TAB_HEIGHT: f32 = 152.0;
+
+/// A sharp launch followed by a long settle, staggered by bot order.
+pub fn bot_tab_reveal(elapsed: f32, index: usize) -> f32 {
+    let t = ((elapsed - index as f32 * 0.14) / 0.8).clamp(0.0, 1.0);
+    if t >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2.0_f32.powf(-12.0 * t)
+    }
+}
 /// Match lengths the owner can pick from, in seconds. The server accepts
 /// anything within its own limits (`sim/src/rules.rs`).
 const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
@@ -59,22 +71,6 @@ const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
 /// `arena::STRATEGY_VIEW`).
 const PROMPT_COLUMN_SHARE: f32 = 0.34;
 const PROMPT_COLUMN_WIDTH: std::ops::RangeInclusive<f32> = 360.0..=540.0;
-
-/// Below this width the interface switches to its stacked layout.
-pub const COMPACT_WIDTH: f32 = 640.0;
-/// A compact window shorter than this has no room for the players' list
-/// above the owner's room settings and the prompt.
-const ROSTER_MIN_HEIGHT: f32 = 700.0;
-/// A compact window this low has the on-screen keyboard open: the prompt
-/// takes all of it.
-const KEYBOARD_OPEN_HEIGHT: f32 = 520.0;
-/// How much of a phone's screen, from the top, an on-screen keyboard leaves
-/// free. On the low side, so nothing ends up behind a tall keyboard.
-const KEYBOARD_FREE_SHARE: f32 = 0.46;
-/// How tall a button is on a touch screen.
-const TOUCH_BUTTON: f32 = 44.0;
-/// How tall the "Your build" card is.
-const LOADOUT_HEIGHT: f32 = 140.0;
 
 /// What there is to show. Filled in every frame by `net` from the server, or
 /// by `sandbox` from made-up data; the UI only reads it.
@@ -90,6 +86,12 @@ pub enum Screen {
     /// Joined, waiting for the server to put us in the room.
     Entering,
     Room(Box<Snapshot>),
+}
+
+/// Camera-facing UI state: placement uses the unobstructed arena view.
+#[derive(Resource, Default)]
+pub struct ArenaUi {
+    pub placing: bool,
 }
 
 /// What the player asked for. Carried out by `net` (or `sandbox`).
@@ -134,9 +136,6 @@ struct Form {
     /// The owner is placing teleporters: clicks on the roof add and remove
     /// pads.
     placing: bool,
-    /// A phone or tablet: buttons instead of keyboard shortcuts, and no
-    /// focus on a text box before the player taps it (that would bring the
-    /// on-screen keyboard up over the game every round).
     touch: bool,
 }
 
@@ -150,6 +149,7 @@ enum Field {
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin::default())
         .add_message::<Action>()
+        .init_resource::<ArenaUi>()
         .insert_resource(Form {
             mac: is_mac(),
             touch: is_touch(),
@@ -166,9 +166,6 @@ pub fn plugin(app: &mut App) {
     }
 }
 
-/// Brings the on-screen keyboard up the moment a text box takes the focus
-/// and puts it away when none has it. bevy_egui only decides when a finger
-/// lifts, from the frame before the tap, so a first tap on a box did nothing.
 #[cfg(target_arch = "wasm32")]
 fn on_screen_keyboard(outputs: Query<&bevy_egui::EguiOutput>, mut open: Local<bool>) {
     let editing = outputs.iter().any(|output| {
@@ -213,7 +210,6 @@ pub fn is_mac() -> bool {
     }
 }
 
-/// Whether the game runs on a phone or tablet. Only the browser build does.
 pub fn is_touch() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -282,15 +278,33 @@ impl Snapshot {
     }
 }
 
+/// Reserve typing space when a mobile iframe cannot report keyboard height.
+fn clear_of_keyboard(ctx: &egui::Context, touch: bool) -> egui::Rect {
+    let window = ctx.viewport_rect();
+    let covered =
+        touch && ctx.text_edit_focused() && window.width() < 760.0 && window.height() >= 520.0;
+    if covered {
+        window.with_max_y(window.top() + window.height() * 0.46)
+    } else {
+        window
+    }
+}
+
+/// Narrow windows use a stacked layout, including phones rotated mid-round.
+pub fn compact_view(width: f32) -> bool {
+    width < 760.0
+}
+
 fn draw(
     mut contexts: EguiContexts,
-    mut form: ResMut<Form>,
+    (mut form, mut arena_ui): (ResMut<Form>, ResMut<ArenaUi>),
     screen: Res<Screen>,
     mut actions: MessageWriter<Action>,
     replay: Res<Replay>,
     camera: Single<(&Camera, &GlobalTransform), With<ArenaCamera>>,
     mut fonts_set: Local<bool>,
 ) -> Result {
+    arena_ui.placing = false;
     let ctx = &*contexts.ctx_mut()?;
     if !*fonts_set {
         theme::set_fonts(ctx);
@@ -305,6 +319,36 @@ fn draw(
         return Ok(());
     }
     let screen_rect = clear_of_keyboard(ctx, form.touch);
+    let compact = compact_view(screen_rect.width());
+    let portrait = ctx.viewport_rect().height() > ctx.viewport_rect().width() || form.touch;
+    let default_widgets = egui::Visuals::light().widgets;
+    ctx.all_styles_mut(|style| {
+        for (widget, normal) in [
+            (
+                &mut style.visuals.widgets.noninteractive,
+                &default_widgets.noninteractive,
+            ),
+            (
+                &mut style.visuals.widgets.inactive,
+                &default_widgets.inactive,
+            ),
+            (&mut style.visuals.widgets.hovered, &default_widgets.hovered),
+            (&mut style.visuals.widgets.active, &default_widgets.active),
+            (&mut style.visuals.widgets.open, &default_widgets.open),
+        ] {
+            widget.corner_radius = if portrait {
+                egui::CornerRadius::same(255)
+            } else {
+                normal.corner_radius
+            };
+        }
+        style.spacing.interact_size.y = if compact || form.touch { 44.0 } else { 24.0 };
+        style.spacing.button_padding = if compact || form.touch {
+            egui::vec2(12.0, 10.0)
+        } else {
+            egui::vec2(4.0, 1.0)
+        };
+    });
     let mut background = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("arena_overlay"),
@@ -343,96 +387,72 @@ fn draw(
     let dim = 1.0 - help.clamp(0.0, 1.0);
     background.multiply_opacity(dim);
 
-    let game = &snapshot.game;
-    let compact = screen.width() < COMPACT_WIDTH;
-    let prompting = game.phase == Phase::Prompting;
-    let submission = snapshot.submission_of(snapshot.me.id);
-    let writing = prompting
-        && submission.is_none_or(|submission| submission.status == SubmissionStatus::Failed);
-    // With the keyboard up on a phone there is only room for the prompt.
-    let typing = compact && writing && screen.height() < KEYBOARD_OPEN_HEIGHT;
-
     let (camera, camera_transform) = *camera;
     // Only the owner moves the pads, and only while the next match is still
     // to be set up.
-    form.placing &= prompting && snapshot.i_own_the_room() && !form.help;
+    let game = &snapshot.game;
+    form.placing &= game.phase == Phase::Prompting && snapshot.i_own_the_room() && !form.help;
     if form.placing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         form.placing = false;
     }
+    arena_ui.placing = form.placing;
     let view = (camera, camera_transform);
     teleporters(ctx, &background, snapshot, view, form.placing, &mut actions);
     bot_markers(&background, &replay, camera, camera_transform);
-    let banner = banner(&background, screen, snapshot, &replay);
-    let clock = match_timer(&background, screen, game, &replay);
-    // Compact: the result is as wide as the screen, so faults go under it.
-    let above_faults = if compact { banner.or(clock) } else { clock };
-    faults(ctx, screen, snapshot, &replay, above_faults);
-    // Compact: the players only while a prompt is due. The bots' health
-    // strip says who is who during the match.
-    // On a short phone the owner's settings and the prompt need the room
-    // the list would take.
-    let crowded =
-        compact && writing && snapshot.i_own_the_room() && screen.height() < ROSTER_MIN_HEIGHT;
-    let roster = (!typing && !crowded && (!compact || prompting))
-        .then(|| roster(&background, screen, snapshot, &replay, compact));
-    let mut top = roster.map_or(screen.top(), |roster| roster.bottom()) + EDGE;
-
-    if prompting && snapshot.i_own_the_room() && !typing {
-        let below = compact.then_some(top);
-        let settings = room_settings(
+    if !compact {
+        bot_cards(&background, screen, snapshot, &replay);
+    }
+    banner(&background, screen, snapshot, &replay);
+    let clock = if compact {
+        None
+    } else {
+        match_timer(&background, screen, &snapshot.game, &replay)
+    };
+    if !compact {
+        faults(ctx, snapshot, &replay, clock);
+    }
+    let typing = compact && screen.height() < 520.0 && ctx.text_edit_focused();
+    let roster = if typing {
+        egui::Rect::from_min_size(screen.min, egui::Vec2::ZERO)
+    } else if compact {
+        compact_roster(
             ctx,
             screen,
-            below,
             snapshot,
+            &replay,
             dim,
             &mut form.placing,
             &mut actions,
-        );
-        if compact {
-            top = settings.bottom() + EDGE;
-        }
+        )
+    } else {
+        roster(&background, screen, snapshot, &replay)
+    };
+
+    if game.phase == Phase::Prompting && snapshot.i_own_the_room() && !compact {
+        room_settings(ctx, snapshot, dim, &mut form.placing, &mut actions);
     }
+    let submission = snapshot.submission_of(snapshot.me.id);
     // Whatever the phase: the last bot ready starts the countdown at once.
     if submission.is_some_and(|s| s.status == SubmissionStatus::Ready) && form.built != form.sent {
         form.built = form.sent.clone();
     }
-    let status = match (game.phase, submission.map(|s| s.status)) {
+    match (game.phase, submission.map(|s| s.status)) {
         (Phase::Prompting, None | Some(SubmissionStatus::Failed)) => {
             let error = submission.map(|failed| failed.error.as_str());
-            let outer = if typing {
-                screen.shrink(EDGE)
-            } else if compact {
-                // A sheet along the bottom, under whatever is stacked above.
-                let mut height = (screen.height() * 0.38).clamp(190.0, 340.0);
-                // Room to read what went wrong and still see the prompt.
-                let problem =
-                    error.is_some_and(|why| !why.is_empty()) || snapshot.prompt_refusal.is_some();
-                if problem {
-                    height += 100.0;
-                }
-                // Never less than the prompt needs to stay usable, even if
-                // that covers the bottom of what is stacked above.
-                let least = if problem { 250.0 } else { 180.0 };
-                let top = top
-                    .max(screen.bottom() - EDGE - height)
-                    .min(screen.bottom() - EDGE - least);
-                egui::Rect::from_min_max(
-                    egui::pos2(screen.left() + EDGE, top),
-                    screen.max - egui::Vec2::splat(EDGE),
-                )
+            let top = roster.bottom() + 12.0;
+            if compact && form.placing {
+                status_line(
+                    ctx,
+                    false,
+                    "Tap the roof to add a pad; tap a pad to remove it.",
+                    0.0,
+                );
             } else {
-                let width = (screen.width() * PROMPT_COLUMN_SHARE)
-                    .clamp(*PROMPT_COLUMN_WIDTH.start(), *PROMPT_COLUMN_WIDTH.end());
-                egui::Rect::from_min_max(
-                    egui::pos2(screen.right() - EDGE - width, top),
-                    screen.max - egui::Vec2::splat(EDGE),
-                )
-            };
-            prompt_box(ctx, outer, snapshot, error, &mut form, &mut actions);
-            None
+                prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
+            }
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
-            Some((true, "Choosing build…".to_string()))
+            status_line(ctx, true, "Choosing build…", 0.0);
         }
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => {
             let waiting = snapshot.waiting_on();
@@ -444,29 +464,16 @@ fn draw(
             } else {
                 "Your bot is ready.".into()
             };
-            Some((false, text))
+            status_line(ctx, false, &text, 0.0);
         }
         // The big countdown and the fight speak for themselves.
-        (Phase::Countdown | Phase::Fighting, _) => None,
-        (Phase::Results, _) => Some((false, "Next round starts in a moment.".to_string())),
-    };
-    let status = status.map(|(busy, text)| status_line(ctx, screen, busy, &text));
-    if compact {
-        // The prompt sheet covers where the strip goes.
-        if !writing {
-            let bottom = status.map_or(screen.bottom(), |status| status.top()) - EDGE;
-            if matches!(game.phase, Phase::Prompting | Phase::Countdown) {
-                let outer = egui::Rect::from_min_max(
-                    egui::pos2(screen.left() + EDGE, bottom - LOADOUT_HEIGHT),
-                    egui::pos2(screen.right() - EDGE, bottom),
-                );
-                loadout_card(&background, outer, snapshot);
-            } else {
-                bot_strip(&background, screen, bottom, snapshot, &replay);
-            }
-        }
-    } else {
-        bot_cards(&background, screen, snapshot, &replay);
+        (Phase::Countdown | Phase::Fighting, _) => {}
+        (Phase::Results, _) => status_line(
+            ctx,
+            false,
+            "Next round starts in a moment.",
+            if compact { 0.0 } else { BOT_TAB_HEIGHT },
+        ),
     }
     if help != 0.0 {
         prompt_help(ctx, screen, help, &mut form);
@@ -474,26 +481,7 @@ fn draw(
     Ok(())
 }
 
-/// The part of the window the on-screen keyboard leaves free. Opened as its
-/// own page, the window gets smaller when the keyboard comes up. Inside
-/// another page (itch.io) it does not, and the game cannot tell how big the
-/// keyboard is: so while a text box is being edited in a phone-sized window
-/// that is still its full height, count the lower part as covered.
-fn clear_of_keyboard(ctx: &egui::Context, touch: bool) -> egui::Rect {
-    let window = ctx.viewport_rect();
-    let covered = touch
-        && ctx.text_edit_focused()
-        && window.width() < COMPACT_WIDTH
-        && window.height() >= KEYBOARD_OPEN_HEIGHT;
-    if covered {
-        window.with_max_y(window.top() + window.height() * KEYBOARD_FREE_SHARE)
-    } else {
-        window
-    }
-}
-
-/// First screen, on every launch: who are you, and which room? Centred in
-/// `screen`.
+/// First screen, on every launch: who are you, and which room?
 fn join_screen(
     ctx: &egui::Context,
     screen: egui::Rect,
@@ -512,74 +500,103 @@ fn join_screen(
         }
     }
 
+    let compact = compact_view(ctx.viewport_rect().width());
     egui::Area::new(egui::Id::new("join_screen"))
         .anchor(
-            egui::Align2::CENTER_CENTER,
-            screen.center() - ctx.viewport_rect().center(),
+            if compact {
+                egui::Align2::CENTER_TOP
+            } else {
+                egui::Align2::CENTER_CENTER
+            },
+            if compact {
+                egui::vec2(0.0, EDGE)
+            } else {
+                egui::Vec2::ZERO
+            },
         )
         .show(ctx, |ui| {
             box_frame().show(ui, |ui| {
-                let room_for_it = screen.width()
-                    - 2.0 * (EDGE + f32::from(theme::BOX_MARGIN) + theme::PANEL_STROKE_WIDTH);
-                ui.set_width(room_for_it.min(380.0));
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("Who's playing, and where?")
-                            .font(theme::bold(theme::SIZE_TITLE))
-                            .color(theme::INK),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(small("Players with the same room id play together."));
-                    ui.add_space(14.0);
+                ui.set_width(380.0_f32.min((ctx.viewport_rect().width() - 4.0 * EDGE).max(100.0)));
+                let max_height =
+                    (screen.height() - 2.0 * EDGE - box_frame().total_margin().sum().y).max(80.0);
+                ui.set_max_height(max_height);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new("Who's playing, and where?")
+                                    .font(theme::bold(theme::SIZE_TITLE))
+                                    .color(theme::INK),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(small("Players with the same room ID play together."));
+                            ui.add_space(14.0);
 
-                    let name = text_field(ui, &mut form.name, "Your name", MAX_NAME_CHARS);
-                    ui.add_space(4.0);
-                    let room = text_field(ui, &mut form.room, "Room id", MAX_ROOM_CHARS);
-                    if form.focused != Some(Field::Join) && !form.touch {
-                        form.focused = Some(Field::Join);
-                        name.request_focus();
-                    }
+                            ui.spacing_mut().item_spacing.y = JOIN_CONTROL_GAP;
+                            let name = text_field(ui, &mut form.name, "Your name", MAX_NAME_CHARS);
+                            let room = text_field(ui, &mut form.room, "Room ID", MAX_ROOM_CHARS);
+                            if form.focused != Some(Field::Join) {
+                                form.focused = Some(Field::Join);
+                                if !compact && !form.touch {
+                                    name.request_focus();
+                                }
+                            }
 
-                    ui.add_space(10.0);
-                    let mut tapped = false;
-                    if form.touch {
-                        // Tapped too early, it sends the player to the empty box.
-                        let size = egui::vec2(ui.available_width(), TOUCH_BUTTON);
-                        tapped = ui
-                            .add_sized(size, theme::button("Play", theme::SIZE_FIELD, true))
+                            let play = full_width_button(
+                                ui,
+                                "Play",
+                                !form.name.trim().is_empty() && !form.room.trim().is_empty(),
+                                JOIN_CONTROL_HEIGHT,
+                            )
                             .clicked();
-                    } else {
-                        ui.label(small("Press Enter to play"));
-                    }
-                    // Why the server turned the last attempt away (room full).
-                    if let Some(error) = error {
-                        ui.add_space(12.0);
-                        theme::error_panel(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(theme::error_heading("Can't join"));
-                            ui.label(theme::error_body(error));
-                        });
-                    }
+                            // Why the server turned the last attempt away (room full).
+                            if let Some(error) = error {
+                                ui.add_space(12.0);
+                                theme::error_panel(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(theme::error_heading("Can't join"));
+                                    ui.label(theme::error_body(error));
+                                });
+                            }
 
-                    // A single-line box gives up the focus on Enter. Whichever box
-                    // is still empty gets it next; with both filled in, we join.
-                    let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if tapped || entered && (name.lost_focus() || room.lost_focus()) {
-                        let (who, at) = (form.name.trim(), form.room.trim());
-                        if who.is_empty() {
-                            name.request_focus();
-                        } else if at.is_empty() {
-                            room.request_focus();
-                        } else {
-                            actions.write(Action::Join {
-                                name: who.to_string(),
-                                room: at.to_string(),
-                            });
-                        }
-                    }
-                });
+                            // A single-line box gives up the focus on Enter. Whichever box
+                            // is still empty gets it next; with both filled in, we join.
+                            let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            if play || (entered && (name.lost_focus() || room.lost_focus())) {
+                                let (who, at) = (form.name.trim(), form.room.trim());
+                                if who.is_empty() {
+                                    name.request_focus();
+                                } else if at.is_empty() {
+                                    room.request_focus();
+                                } else {
+                                    actions.write(Action::Join {
+                                        name: who.to_string(),
+                                        room: at.to_string(),
+                                    });
+                                }
+                            }
+                        });
+                    });
             });
         });
+}
+
+/// Wide controls need explicit alignment: egui otherwise inherits the
+/// surrounding vertical layout's left/top text alignment.
+fn full_width_button(ui: &mut egui::Ui, text: &str, enabled: bool, height: f32) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), height);
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.add_enabled(
+                enabled,
+                egui::Button::new((egui::Atom::grow(), text, egui::Atom::grow())).min_size(size),
+            )
+        },
+    )
+    .inner
 }
 
 /// One single-line box of the join screen.
@@ -592,6 +609,8 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
             .font(egui::FontId::proportional(theme::SIZE_FIELD))
             .text_color(theme::INK)
             .horizontal_align(egui::Align::Center)
+            .vertical_align(egui::Align::Center)
+            .min_size(egui::vec2(0.0, JOIN_CONTROL_HEIGHT))
             .desired_width(f32::INFINITY)
             .frame(theme::field_frame()),
     );
@@ -602,18 +621,37 @@ fn text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, limit: usize) ->
     field
 }
 
-/// Second screen, every round: the prompt, filling `outer` (a column down
-/// the right side, under the roster; a sheet along the bottom when compact).
-/// What went wrong last time, if anything, sits at the head of it. Enter adds a line; Command+Enter (or Ctrl+Enter)
+/// Second screen, every round: the prompt, in a column down the right side
+/// from `top` (under the roster). What went wrong last time, if anything,
+/// sits at the head of it. Enter adds a line; Command+Enter (or Ctrl+Enter)
 /// sends.
 fn prompt_box(
     ctx: &egui::Context,
-    outer: egui::Rect,
+    screen: egui::Rect,
+    top: f32,
     snapshot: &Snapshot,
     error: Option<&str>,
     form: &mut Form,
     actions: &mut MessageWriter<Action>,
 ) {
+    let compact = compact_view(screen.width());
+    let width = if compact {
+        screen.width() - 2.0 * EDGE
+    } else {
+        (screen.width() * PROMPT_COLUMN_SHARE)
+            .clamp(*PROMPT_COLUMN_WIDTH.start(), *PROMPT_COLUMN_WIDTH.end())
+    };
+    let outer = egui::Rect::from_min_max(
+        egui::pos2(screen.right() - EDGE - width, top),
+        egui::pos2(
+            screen.right() - EDGE,
+            if compact && !(ctx.text_edit_focused() && screen.height() < 520.0) {
+                (top + screen.height() * 0.48).min(screen.bottom() - EDGE)
+            } else {
+                screen.bottom() - EDGE
+            },
+        ),
+    );
     let frame = box_frame();
     let inner = outer.size() - frame.total_margin().sum();
 
@@ -640,13 +678,14 @@ fn prompt_box(
                 ui.horizontal(|ui| {
                     ui.label(theme::heading("Your prompt"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let help_size = if compact { 44.0 } else { 24.0 };
                         let button = egui::Button::new(
                             egui::RichText::new("?").font(theme::bold(theme::SIZE_BODY)),
                         )
-                        .corner_radius(theme::PILL_RADIUS)
-                        .min_size(egui::Vec2::splat(if form.touch { 36.0 } else { 24.0 }));
+                        .corner_radius(help_size / 2.0)
+                        .min_size(egui::Vec2::splat(help_size));
                         if ui
-                            .add(button)
+                            .add_sized(egui::Vec2::splat(help_size), button)
                             .on_hover_text("What your bot knows")
                             .clicked()
                         {
@@ -655,9 +694,8 @@ fn prompt_box(
                         ui.label(small(format!("Round {}", snapshot.game.round)));
                     });
                 });
-                // Dropped when space is short (a phone with its keyboard up).
-                if inner.y >= 240.0 {
-                    let unchanged = !form.built.is_empty() && form.prompt.trim() == form.built;
+                let unchanged = !form.built.is_empty() && form.prompt.trim() == form.built;
+                if !compact {
                     ui.label(small(if unchanged {
                         "Send it as it is to keep the same bot, or change it for a new one."
                     } else {
@@ -665,9 +703,6 @@ fn prompt_box(
                     }));
                 }
                 ui.add_space(8.0);
-                let footer_height = if form.touch { TOUCH_BUTTON } else { 28.0 };
-                // A little air between the text and the button under it.
-                let footer_gap = if form.touch { 6.0 } else { 0.0 };
                 // A prompt the server would not take at all comes before one
                 // whose agent failed.
                 let refused = snapshot.prompt_refusal.as_deref();
@@ -676,31 +711,22 @@ fn prompt_box(
                     .or(error.map(|why| ("Your agent couldn't build a bot", why)))
                     .filter(|(_, why)| !why.is_empty());
                 if let Some((heading, why)) = problem {
-                    // A long one scrolls, so the prompt and Send keep their room:
-                    // a few lines of prompt, and the panel's own heading.
-                    let most = (ui.available_height() - footer_height - footer_gap - 150.0)
-                        .max(theme::SIZE_BODY * 1.5);
                     theme::error_panel(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(theme::error_heading(heading));
-                        egui::ScrollArea::vertical()
-                            .id_salt("prompt_problem")
-                            .max_height(most)
-                            .min_scrolled_height(0.0)
-                            .show(ui, |ui| ui.label(theme::error_body(why)));
+                        ui.label(theme::error_body(why));
                     });
                     ui.add_space(10.0);
                 }
 
-                let text_height = ui.available_height()
-                    - footer_height
-                    - footer_gap
-                    - ui.spacing().item_spacing.y;
+                let footer_height = if compact { 44.0 } else { 28.0 };
+                let send_gap = 12.0;
+                let text_height =
+                    ui.available_height() - footer_height - ui.spacing().item_spacing.y - send_gap;
                 let field_box = theme::field_frame().show(ui, |ui| {
-                    let text_height = text_height - 16.0;
+                    let text_height = (text_height - 16.0).max(48.0);
                     egui::ScrollArea::vertical()
                         .max_height(text_height)
-                        .min_scrolled_height(0.0)
                         .auto_shrink(false)
                         .show(ui, |ui| {
                             let field = clipboard::show(
@@ -708,21 +734,31 @@ fn prompt_box(
                                 egui::TextEdit::multiline(&mut form.prompt)
                                     .hint_text("Rush the weakest bot, then circle the edge…")
                                     .char_limit(MAX_PROMPT_CHARS)
-                                    .font(egui::FontId::proportional(theme::SIZE_BODY))
+                                    .font(egui::FontId::proportional(if compact {
+                                        16.0
+                                    } else {
+                                        theme::SIZE_BODY
+                                    }))
                                     .text_color(theme::INK)
                                     .desired_width(f32::INFINITY)
+                                    .margin(egui::Margin {
+                                        bottom: if compact { 48 } else { 24 },
+                                        ..egui::Margin::ZERO
+                                    })
                                     .min_size(egui::vec2(0.0, text_height))
                                     // The box around it is already drawn.
                                     .frame(egui::Frame::NONE),
                             );
                             let this = Field::Prompt(snapshot.game.id, snapshot.game.round);
-                            if form.focused != Some(this) && !form.touch {
+                            if form.focused != Some(this) {
                                 form.focused = Some(this);
-                                field.request_focus();
+                                if !compact && !form.touch {
+                                    field.request_focus();
+                                }
                             }
                         });
                 });
-                if dice_button(ui, field_box.response.rect, form.touch) {
+                if dice_button(ui, field_box.response.rect) {
                     let seed = (ui.input(|input| input.time) * 1000.0) as u32;
                     let mut pick = (crate::fx::rand(seed) * EXAMPLE_PROMPTS.len() as f32) as usize
                         % EXAMPLE_PROMPTS.len();
@@ -733,40 +769,51 @@ fn prompt_box(
                     form.prompt = EXAMPLE_PROMPTS[pick].to_string();
                 }
 
-                let mut clicked = false;
-                ui.add_space(footer_gap);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), footer_height),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        let ready = !form.prompt.trim().is_empty();
-                        if form.touch {
-                            let size = egui::vec2(96.0, TOUCH_BUTTON);
+                ui.add_space(send_gap);
+                let clicked = if compact {
+                    full_width_button(
+                        ui,
+                        "Send prompt",
+                        !form.prompt.trim().is_empty(),
+                        footer_height,
+                    )
+                    .clicked()
+                } else {
+                    let mut clicked = false;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), footer_height),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            let ready = !form.prompt.trim().is_empty();
                             clicked = ui
-                                .add_sized(size, theme::button("Send", theme::SIZE_BODY, ready))
+                                .add_enabled(
+                                    ready,
+                                    egui::Button::new(
+                                        egui::RichText::new("Send")
+                                            .font(theme::bold(theme::SIZE_BODY)),
+                                    ),
+                                )
                                 .clicked();
-                            return;
-                        }
-                        clicked = ui
-                            .add_enabled(
-                                ready,
-                                egui::Button::new(
-                                    egui::RichText::new("Send").font(theme::bold(theme::SIZE_BODY)),
-                                ),
-                            )
-                            .clicked();
-                        ui.label(small(if form.mac {
-                            "⌘ Enter to send"
-                        } else {
-                            "Ctrl + Enter to send"
-                        }));
-                    },
-                );
-
+                            ui.label(small(if form.mac {
+                                "⌘ Enter to send"
+                            } else {
+                                "Ctrl + Enter to send"
+                            }));
+                        },
+                    );
+                    clicked
+                };
                 let prompt = form.prompt.trim();
                 if (shortcut || clicked) && !prompt.is_empty() {
                     actions.write(Action::SubmitPrompt(prompt.to_string()));
                     form.sent = prompt.to_string();
+                    if compact {
+                        ui.memory_mut(|memory| {
+                            if let Some(id) = memory.focused() {
+                                memory.surrender_focus(id);
+                            }
+                        });
+                    }
                 }
             });
         });
@@ -789,10 +836,9 @@ const EXAMPLE_PROMPTS: [&str; 5] = [
 /// A round button with a die on it, in the bottom right corner of `field`,
 /// styled like the help button. It goes in a child ui so it floats over the
 /// text without taking space from it. True when clicked.
-fn dice_button(ui: &mut egui::Ui, field: egui::Rect, touch: bool) -> bool {
-    // Finger-sized on a phone, unless the keyboard has squeezed the field.
-    let size = if touch && field.height() >= 90.0 {
-        36.0
+fn dice_button(ui: &mut egui::Ui, field: egui::Rect) -> bool {
+    let size = if compact_view(ui.ctx().viewport_rect().width()) {
+        44.0
     } else {
         24.0
     };
@@ -819,7 +865,13 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect, touch: bool) -> bool {
     let response = child
         .add(
             egui::Button::new("")
-                .corner_radius(theme::PILL_RADIUS)
+                .corner_radius(
+                    if ui.ctx().viewport_rect().height() > ui.ctx().viewport_rect().width() {
+                        255
+                    } else {
+                        theme::PILL_RADIUS
+                    },
+                )
                 .min_size(egui::Vec2::splat(size)),
         )
         .on_hover_text("Roll a random prompt");
@@ -847,36 +899,21 @@ fn dice_button(ui: &mut egui::Ui, field: egui::Rect, touch: bool) -> bool {
 }
 
 /// The room's settings, top left. Only the owner gets them, and only while
-/// prompting: that is when the next match is still to be set up. With
-/// `below` they span the screen from that height instead (compact). Returns
-/// the box they took up.
+/// prompting: that is when the next match is still to be set up.
 fn room_settings(
     ctx: &egui::Context,
-    screen: egui::Rect,
-    below: Option<f32>,
     snapshot: &Snapshot,
     dim: f32,
     placing: &mut bool,
     actions: &mut MessageWriter<Action>,
-) -> egui::Rect {
+) {
     let game = &snapshot.game;
-    let frame = box_frame();
     egui::Area::new(egui::Id::new("room_settings"))
-        .fixed_pos(egui::pos2(
-            screen.left() + EDGE,
-            below.unwrap_or(screen.top() + EDGE),
-        ))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE))
         .interactable(dim == 1.0)
         .show(ctx, |ui| {
             ui.multiply_opacity(dim);
-            frame.show(ui, |ui| {
-                if below.is_some() {
-                    ui.set_width(screen.width() - 2.0 * EDGE - frame.total_margin().sum().x);
-                    // Room for a fingertip.
-                    ui.spacing_mut().button_padding = egui::vec2(8.0, 7.0);
-                    ui.spacing_mut().interact_size.y = 34.0;
-                    ui.spacing_mut().icon_width = 20.0;
-                }
+            box_frame().show(ui, |ui| {
                 ui.label(theme::heading("Room settings"));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -914,9 +951,7 @@ fn room_settings(
                     ui.label(small("Click a pad to take it away."));
                 }
             });
-        })
-        .response
-        .rect
+        });
 }
 
 /// How far the help popup is in, 0 to 1, overshooting a little on the way
@@ -952,34 +987,74 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
         form.help = false;
     }
 
-    let card = egui::Area::new(egui::Id::new("prompt_help_card"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.multiply_opacity(alpha);
-            box_frame().show(ui, |ui| {
-                ui.set_width(WIDTH.min(screen.width() - 4.0 * EDGE));
-                // On a short screen the text scrolls and the button stays put.
-                egui::ScrollArea::vertical()
-                    .max_height((screen.height() - 150.0).max(120.0))
-                    .show(ui, help_text);
+    let card =
+        egui::Area::new(egui::Id::new("prompt_help_card"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.multiply_opacity(alpha);
+                box_frame().show(ui, |ui| {
+                    ui.set_width(WIDTH.min((screen.width() - 4.0 * EDGE).max(100.0)));
+                    let max_height = (screen.height() - 100.0).max(100.0);
+                    // Areas start with a 400px height budget; let desktop help use
+                    // the screen's available space before introducing scrolling.
+                    ui.set_max_height(max_height);
+                    egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        ui.label(theme::heading("What your bot knows"));
+                        ui.add_space(4.0);
+                        ui.label(small(
+                            "Your agent turns your prompt into a script. Ten times a second, \
+                     the script looks at the arena and picks one move.",
+                ));
+                ui.add_space(10.0);
+                for line in [
+                    "Where it is, its hp and stamina, and how long until it can punch again",
+                    "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
+                    "Where the numbered teleporters are and where each one leads",
+                    "The arena's size, the time, and the rules: speed, punch range, damage",
+                    "Anything it chose to remember from earlier in the match",
+                ] {
+                    bullet(ui, line);
+                }
+                ui.add_space(4.0);
+                ui.label(small(
+                    "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
+                     wait: one per tick. Dashes, punches and the shield cost stamina, which \
+                     comes back on ticks it does none of them. A shield stops every hit but \
+                     slows the bot to half speed. A teleporter takes any bot that gets onto \
+                     it to the next number, and the last one back to 1. It can't see other prompts or when enemies can punch next.",
+                ));
 
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let clicked = if form.touch {
-                        let size = egui::vec2(96.0, TOUCH_BUTTON);
-                        ui.add_sized(size, theme::button("Got it", theme::SIZE_BODY, true))
-                            .clicked()
-                    } else {
-                        ui.button(egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)))
-                            .clicked()
-                    };
-                    if clicked {
-                        form.help = false;
-                    }
+                ui.add_space(14.0);
+                ui.label(theme::heading("Writing a good prompt"));
+                ui.add_space(4.0);
+                for line in [
+                    "Choose a build: health, speed, damage, reach, or faster punches",
+                    "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
+                    "Say who to go after when there's more than one enemy",
+                    "At the time limit the most hp wins, so plan for the clock",
+                    "A short, clear plan beats a clever, vague one",
+                ] {
+                    bullet(ui, line);
+                }
+
+                        ui.add_space(12.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                            let got_it = egui::Button::new(
+                                egui::RichText::new("Got it").font(theme::bold(theme::SIZE_BODY)),
+                            );
+                            if ui.add(got_it).clicked() {
+                                form.help = false;
+                            }
+                        });
+                    });
                 });
             });
-        });
 
     // Above the overlay, scaled about its own centre.
     ctx.move_to_top(card.response.layer_id);
@@ -995,47 +1070,6 @@ fn prompt_help(ctx: &egui::Context, screen: egui::Rect, shown: f32, form: &mut F
     }
 }
 
-fn help_text(ui: &mut egui::Ui) {
-    ui.label(theme::heading("What your bot knows"));
-    ui.add_space(4.0);
-    ui.label(small(
-        "Your agent turns your prompt into a script. Ten times a second, \
-                     the script looks at the arena and picks one move.",
-    ));
-    ui.add_space(10.0);
-    for line in [
-        "Where it is, its hp and stamina, and how long until it can punch again",
-        "Where every living enemy is, their hp, stamina, how far away they are and whether their shield is up",
-        "Where the numbered teleporters are and where each one leads",
-        "The arena's size, the time, and the rules: speed, punch range, damage",
-        "Anything it chose to remember from earlier in the match",
-    ] {
-        bullet(ui, line);
-    }
-    ui.add_space(4.0);
-    ui.label(small(
-        "It can walk, dash, punch the nearest enemy in range, hold up a shield, or \
-         wait: one per tick. Dashes, punches and the shield cost stamina, which \
-         comes back on ticks it does none of them. A shield stops every hit but \
-         slows the bot to half speed. A teleporter takes any bot that gets onto \
-         it to the next number, and the last one back to 1. It can't see other \
-         prompts or when enemies can punch next.",
-    ));
-
-    ui.add_space(14.0);
-    ui.label(theme::heading("Writing a good prompt"));
-    ui.add_space(4.0);
-    for line in [
-        "Choose a build: health, speed, damage, reach, or faster punches",
-        "Give numbers and conditions: \"under 30 hp, back off to a wall\"",
-        "Say who to go after when there's more than one enemy",
-        "At the time limit the most hp wins, so plan for the clock",
-        "A short, clear plan beats a clever, vague one",
-    ] {
-        bullet(ui, line);
-    }
-}
-
 /// A list item whose wrapped lines stay clear of the dot.
 fn bullet(ui: &mut egui::Ui, text: &str) {
     ui.horizontal_top(|ui| {
@@ -1044,31 +1078,29 @@ fn bullet(ui: &mut egui::Ui, text: &str) {
     });
 }
 
-/// One line at the bottom while there is nothing to type (more than one on
-/// a narrow screen). Returns the box it took up.
-fn status_line(ctx: &egui::Context, screen: egui::Rect, busy: bool, text: &str) -> egui::Rect {
+/// One line at the bottom while there is nothing to type.
+fn status_line(ctx: &egui::Context, busy: bool, text: &str, lift: f32) {
     egui::Area::new(egui::Id::new("status_line"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -EDGE - 6.0))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -EDGE - 6.0 - lift),
+        )
         .interactable(false)
         .show(ctx, |ui| {
-            // Leave the pill's own margins and the spinner out of the width.
-            ui.set_max_width(screen.width() - 2.0 * EDGE - 60.0);
             pill(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.set_max_width((ctx.viewport_rect().width() - 64.0).max(100.0));
+                ui.horizontal_wrapped(|ui| {
                     if busy {
                         ui.add(egui::Spinner::new().size(14.0));
                     }
                     ui.label(theme::body(text));
                 });
             });
-        })
-        .response
-        .rect
+        });
 }
 
-/// Everyone in the room and what they are up to, top right (across the top
-/// when `compact`). Returns the box it took up, so the prompt column can
-/// start below it.
+/// Everyone in the room and what they are up to, top right. Returns the
+/// box it took up, so the prompt column can start below it.
 ///
 /// Painted directly instead of laid out by egui: an anchored `Area` is placed
 /// using its size from the previous frame, so it would jump for a frame
@@ -1078,7 +1110,6 @@ fn roster(
     screen: egui::Rect,
     snapshot: &Snapshot,
     replay: &Replay,
-    compact: bool,
 ) -> egui::Rect {
     const DOT: f32 = 9.0;
     const GAP: f32 = 6.0;
@@ -1150,16 +1181,11 @@ fn roster(
     }
 
     let widest = |pick: fn(&(_, _, _)) -> f32| rows.iter().map(pick).fold(0.0, f32::max);
-    let mut name_width = widest(|row| {
+    let name_width = widest(|row| {
         // The room's row also spans the dot's column.
         row.1.size().x - if row.0.is_none() { DOT + GAP } else { 0.0 }
     });
     let state_width = widest(|row| row.2.size().x);
-    if compact {
-        // As wide as the screen, whatever the names: long ones are cut off.
-        name_width =
-            screen.width() - 2.0 * (EDGE + PADDING.x) - DOT - GAP - COLUMN_GAP - state_width;
-    }
     let row_height = widest(|row| row.1.size().y.max(row.2.size().y));
     let size = egui::vec2(
         DOT + GAP + name_width + COLUMN_GAP + state_width,
@@ -1188,10 +1214,7 @@ fn roster(
             x + DOT + GAP + name_width + COLUMN_GAP,
             middle - state.size().y / 2.0,
         );
-        let name_column = egui::Rect::from_x_y_ranges(x..=state_at.x - COLUMN_GAP, outer.y_range());
-        painter
-            .with_clip_rect(name_column)
-            .galley(name_at, name, theme::INK);
+        painter.galley(name_at, name, theme::INK);
         painter.galley(state_at, state, theme::INK);
         y += row_height + ROW_GAP;
         if color.is_none() {
@@ -1268,13 +1291,7 @@ fn match_timer(
 
 /// Scripts that broke during the match, top left (below the match timer),
 /// from the moment the replay reaches the tick where it happened.
-fn faults(
-    ctx: &egui::Context,
-    screen: egui::Rect,
-    snapshot: &Snapshot,
-    replay: &Replay,
-    clock: Option<egui::Rect>,
-) {
+fn faults(ctx: &egui::Context, snapshot: &Snapshot, replay: &Replay, clock: Option<egui::Rect>) {
     let game = &snapshot.game;
     let shown_tick = match game.phase {
         Phase::Fighting => (replay.phase_elapsed * game.ticks_per_sec as f32) as u32,
@@ -1289,13 +1306,14 @@ fn faults(
     if faults.is_empty() {
         return;
     }
-    let top = clock.map_or(EDGE, |clock| clock.bottom() - screen.top() + 6.0);
+    let top = clock.map_or(EDGE, |clock| {
+        clock.bottom() - ctx.viewport_rect().top() + 6.0
+    });
     egui::Area::new(egui::Id::new("faults"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(EDGE, top))
         .interactable(false)
         .show(ctx, |ui| {
-            // The panel's own margins come on top of this.
-            ui.set_max_width((screen.width() - 2.0 * EDGE - 40.0).min(360.0));
+            ui.set_max_width(360.0);
             theme::error_panel(ui, |ui| {
                 for (i, fault) in faults.into_iter().enumerate() {
                     if i > 0 {
@@ -1477,115 +1495,121 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
     }
 }
 
-/// One panel down the left side, vertically centred, with a row per bot in
-/// the match: colour dot, name and health, the health bar underneath and the
-/// stamina bar under that.
-///
-/// Painted directly, like the roster, so the panel doesn't jump a frame when
-/// a name changes length.
+/// Individual tabs docked to the bottom edge during combat and results.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     if matches!(snapshot.game.phase, Phase::Prompting | Phase::Countdown) {
-        let outer = egui::Rect::from_min_size(
-            egui::pos2(screen.left() + EDGE, screen.center().y - 65.0),
-            egui::vec2(350.0, LOADOUT_HEIGHT),
-        );
-        loadout_card(painter, outer, snapshot);
+        loadout_cards(painter, screen, snapshot);
         return;
     }
-    const WIDTH: f32 = 350.0;
-    const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
-    const HEADING: f32 = 30.0;
-    const ROW: f32 = 86.0;
-    /// The last row ends at its bar, not at the next row.
-    const LAST_ROW: f32 = 74.0;
-    const DOT: f32 = 10.0;
-    const BAR: f32 = 6.0;
-    /// The stamina bar, right under the health bar and thinner.
-    const STAMINA_BAR: f32 = 4.0;
-
     if replay.bots.is_empty() {
         return;
     }
-    let height = PADDING.y * 2.0 + HEADING + ROW * (replay.bots.len() - 1) as f32 + LAST_ROW;
-    let outer = egui::Rect::from_min_size(
-        egui::pos2(screen.left() + EDGE, screen.center().y - height / 2.0),
-        egui::vec2(WIDTH, height),
-    );
-    theme::panel(painter, outer);
-    let inner = outer.shrink2(PADDING);
-    painter.text(
-        inner.left_top(),
-        egui::Align2::LEFT_TOP,
-        "Bots",
-        theme::bold(theme::SIZE_HEADING),
-        theme::INK,
-    );
+    const GAP: f32 = 12.0;
+    const PADDING: f32 = 14.0;
+    let count = replay.bots.len();
+    let width =
+        ((screen.width() - EDGE * 2.0 - GAP * (count - 1) as f32) / count as f32).min(220.0);
+    let total = width * count as f32 + GAP * (count - 1) as f32;
+    let left = screen.center().x - total / 2.0;
+    let corners = egui::CornerRadius {
+        nw: theme::BOX_RADIUS,
+        ne: theme::BOX_RADIUS,
+        sw: 0,
+        se: 0,
+    };
 
-    for (i, bot) in replay.bots.iter().enumerate() {
-        let top = inner.top() + HEADING + i as f32 * ROW;
+    for (index, bot) in replay.bots.iter().enumerate() {
+        let reveal = if snapshot.game.phase == Phase::Results {
+            1.0
+        } else {
+            bot_tab_reveal(replay.phase_elapsed, index)
+        };
+        let top = screen.bottom() + 4.0 - (BOT_TAB_HEIGHT + 4.0) * reveal;
+        let outer = egui::Rect::from_min_size(
+            egui::pos2(left + index as f32 * (width + GAP), top),
+            egui::vec2(width, BOT_TAB_HEIGHT + 16.0),
+        );
+        painter.rect(
+            outer,
+            corners,
+            theme::PANEL_FILL,
+            egui::Stroke::new(theme::PANEL_STROKE_WIDTH, theme::PANEL_STROKE),
+            egui::StrokeKind::Inside,
+        );
+        let inner = outer.shrink(PADDING);
         let alive = bot.action != BotAction::Dead;
         let ink = if alive { theme::INK } else { theme::INK_MUTED };
-        let name_y = top + 10.0;
-        painter.circle_filled(
-            egui::pos2(inner.left() + DOT / 2.0, name_y),
-            DOT / 2.0,
-            fill_of(bot),
-        );
-        painter.text(
-            egui::pos2(inner.left() + DOT + 8.0, name_y),
-            egui::Align2::LEFT_CENTER,
+        let color = fill_of(bot);
+        let name_y = inner.top() + 8.0;
+        painter.circle_filled(egui::pos2(inner.left() + 4.0, name_y), 4.0, color);
+        // Wrap nowhere and elide long names so adjacent tabs remain separate.
+        let mut job = egui::text::LayoutJob::simple(
             snapshot.name_of(bot.id),
-            egui::FontId::proportional(theme::SIZE_BODY),
+            theme::bold(theme::SIZE_HEADING),
+            ink,
+            (inner.width() - 20.0).max(1.0),
+        );
+        job.wrap.max_rows = 1;
+        let name = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(inner.left() + 16.0, name_y - name.size().y / 2.0),
+            name,
             ink,
         );
         painter.text(
-            egui::pos2(inner.right(), name_y),
-            egui::Align2::RIGHT_CENTER,
+            inner.left_top() + egui::vec2(0.0, 28.0),
+            egui::Align2::LEFT_TOP,
             if alive {
                 format!("{} / {} HP", bot.hp.max(0), bot.max_hp)
             } else {
-                "Out".into()
+                "Knocked out".into()
             },
             egui::FontId::proportional(theme::SIZE_SMALL),
             theme::INK_MUTED,
         );
-
         let bar = egui::Rect::from_min_size(
-            egui::pos2(inner.left(), top + 22.0),
-            egui::vec2(inner.width(), BAR),
+            inner.left_top() + egui::vec2(0.0, 49.0),
+            egui::vec2(inner.width(), 6.0),
         );
-        painter.rect_filled(bar, BAR / 2.0, theme::HP_TRACK);
+        painter.rect_filled(bar, 3.0, theme::HP_TRACK);
         let health = (bot.hp as f32 / bot.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
-            painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
-        }
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(inner.left(), top + 32.0),
-            egui::vec2(inner.width(), STAMINA_BAR),
-        );
-        painter.rect_filled(bar, STAMINA_BAR / 2.0, theme::HP_TRACK);
-        if alive && bot.stamina > 0.0 {
-            let filled = egui::Rect::from_min_size(
-                bar.min,
-                egui::vec2(bar.width() * bot.stamina, STAMINA_BAR),
+            painter.rect_filled(
+                egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height())),
+                3.0,
+                color,
             );
-            painter.rect_filled(filled, STAMINA_BAR / 2.0, theme::STAMINA);
         }
+        let stamina = egui::Rect::from_min_size(
+            inner.left_top() + egui::vec2(0.0, 58.0),
+            egui::vec2(inner.width(), 4.0),
+        );
+        painter.rect_filled(stamina, 2.0, theme::HP_TRACK);
+        if alive && bot.stamina > 0.0 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    stamina.min,
+                    egui::vec2(stamina.width() * bot.stamina.clamp(0.0, 1.0), 4.0),
+                ),
+                2.0,
+                theme::STAMINA,
+            );
+        }
+        let balanced = [2, 2, 2, 2, 2];
         let points = snapshot
             .submission_of(bot.id)
             .and_then(|s| s.build.as_deref());
-        let balanced = [2, 2, 2, 2, 2];
         if let Some(points) = points
             .filter(|p| p.len() == 5)
             .or_else(|| (bot.id == HOUSE_BOT_ID).then_some(balanced.as_slice()))
         {
             stat_strip(
                 painter,
-                egui::pos2(inner.left(), top + 58.0),
+                inner.left_top() + egui::vec2(0.0, 77.0),
                 inner.width(),
                 points,
                 ink,
+                3,
             );
         }
     }
@@ -1598,10 +1622,12 @@ fn stat_strip(
     width: f32,
     points: &[u32],
     color: egui::Color32,
+    columns: usize,
 ) {
     let stroke = egui::Stroke::new(1.1, color);
     const GAP: f32 = 6.0;
-    let pill_width = (width - GAP * 4.0) / 5.0;
+    let columns = columns.clamp(1, 5);
+    let pill_width = (width - GAP * (columns - 1) as f32) / columns as f32;
     for (i, point) in points.iter().take(5).enumerate() {
         let point = *point as f32;
         let (value, default) = match i {
@@ -1615,11 +1641,23 @@ fn stat_strip(
         let percent = ((value / default - 1.0) * 100.0).round() as i32;
         let text = painter.layout_no_wrap(
             format!("{percent:+}%"),
-            egui::FontId::proportional(theme::SIZE_SMALL),
+            egui::FontId::proportional(if pill_width < 56.0 {
+                11.0
+            } else {
+                theme::SIZE_SMALL
+            }),
             color,
         );
+        let row = i / columns;
+        let in_row = (points.len().min(5) - row * columns).min(columns);
+        let row_width = in_row as f32 * pill_width + GAP * (in_row - 1) as f32;
         let pill = egui::Rect::from_center_size(
-            at + egui::vec2(i as f32 * (pill_width + GAP) + pill_width / 2.0, 0.0),
+            at + egui::vec2(
+                (width - row_width) / 2.0
+                    + (i % columns) as f32 * (pill_width + GAP)
+                    + pill_width / 2.0,
+                row as f32 * 30.0,
+            ),
             egui::vec2(pill_width, 24.0),
         );
         painter.rect_filled(pill, 12.0, theme::FIELD_FILL);
@@ -1682,14 +1720,22 @@ fn stat_strip(
     }
 }
 
-/// During prompting and countdown, only the caller's build is visible. Drawn
-/// in `outer`, [`LOADOUT_HEIGHT`] tall.
-fn loadout_card(painter: &egui::Painter, outer: egui::Rect, snapshot: &Snapshot) {
+/// During prompting and countdown, only the caller's build is visible.
+fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot) {
     let sub = snapshot.submission_of(snapshot.me.id);
     let ready = sub.filter(|s| {
         s.status == SubmissionStatus::Ready
             && s.build.as_ref().is_some_and(|build| build.len() == 5)
     });
+    let top = if snapshot.game.phase == Phase::Prompting && snapshot.i_own_the_room() {
+        (screen.center().y - 65.0).max(screen.top() + 220.0)
+    } else {
+        screen.center().y - 65.0
+    };
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(screen.left() + EDGE, top),
+        egui::vec2(BOT_PANEL_WIDTH, 140.0),
+    );
     theme::panel(painter, outer);
     let inner = outer.shrink(16.0);
     painter.text(
@@ -1723,6 +1769,7 @@ fn loadout_card(painter: &egui::Painter, outer: egui::Rect, snapshot: &Snapshot)
             inner.width(),
             sub.build.as_deref().unwrap_or_default(),
             theme::INK,
+            5,
         );
     } else {
         let text = match sub.map(|s| s.status) {
@@ -1740,120 +1787,8 @@ fn loadout_card(painter: &egui::Painter, outer: egui::Rect, snapshot: &Snapshot)
     }
 }
 
-/// The same on a narrow screen: a strip across the bottom, ending at
-/// `bottom`, the bots two to a line.
-fn bot_strip(
-    painter: &egui::Painter,
-    screen: egui::Rect,
-    bottom: f32,
-    snapshot: &Snapshot,
-    replay: &Replay,
-) {
-    const PADDING: egui::Vec2 = egui::vec2(16.0, 12.0);
-    const ROW: f32 = 44.0;
-    const LAST_ROW: f32 = 34.0;
-    const COLUMN_GAP: f32 = 20.0;
-
-    if replay.bots.is_empty() {
-        return;
-    }
-    let lines = replay.bots.len().div_ceil(2);
-    let height = PADDING.y * 2.0 + ROW * (lines - 1) as f32 + LAST_ROW;
-    let outer = egui::Rect::from_min_max(
-        egui::pos2(screen.left() + EDGE, bottom - height),
-        egui::pos2(screen.right() - EDGE, bottom),
-    );
-    theme::panel(painter, outer);
-    let inner = outer.shrink2(PADDING);
-    let width = (inner.width() - COLUMN_GAP) / 2.0;
-    for (i, bot) in replay.bots.iter().enumerate() {
-        let at = egui::pos2(
-            inner.left() + (i % 2) as f32 * (width + COLUMN_GAP),
-            inner.top() + (i / 2) as f32 * ROW,
-        );
-        bot_row(painter, at, width, snapshot, bot);
-    }
-}
-
-/// One bot of the strip, `width` wide from `at`: colour dot,
-/// name (cut off if too long) and health, the health bar underneath and
-/// the thinner stamina bar under that.
-fn bot_row(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    width: f32,
-    snapshot: &Snapshot,
-    bot: &BotView,
-) {
-    const DOT: f32 = 10.0;
-    const BAR: f32 = 6.0;
-    const STAMINA_BAR: f32 = 4.0;
-
-    let right = at.x + width;
-    let alive = bot.action != BotAction::Dead;
-    let ink = if alive { theme::INK } else { theme::INK_MUTED };
-    let name_y = at.y + 10.0;
-    painter.circle_filled(
-        egui::pos2(at.x + DOT / 2.0, name_y),
-        DOT / 2.0,
-        fill_of(bot),
-    );
-    let health = painter.text(
-        egui::pos2(right, name_y),
-        egui::Align2::RIGHT_CENTER,
-        if alive {
-            format!("{} / {} HP", bot.hp.max(0), bot.max_hp)
-        } else {
-            "Out".into()
-        },
-        egui::FontId::proportional(theme::SIZE_SMALL),
-        theme::INK_MUTED,
-    );
-    // A name too long for its column ends in "…" short of the health.
-    let name_left = at.x + DOT + 8.0;
-    let mut name = egui::text::LayoutJob::simple_singleline(
-        snapshot.name_of(bot.id).to_string(),
-        egui::FontId::proportional(theme::SIZE_BODY),
-        ink,
-    );
-    name.wrap =
-        egui::text::TextWrapping::truncate_at_width((health.left() - 8.0 - name_left).max(0.0));
-    let name = painter.layout_job(name);
-    painter.galley(
-        egui::pos2(name_left, name_y - name.size().y / 2.0),
-        name,
-        ink,
-    );
-
-    let bar = egui::Rect::from_min_size(egui::pos2(at.x, at.y + 22.0), egui::vec2(width, BAR));
-    painter.rect_filled(bar, BAR / 2.0, theme::HP_TRACK);
-    let left = (bot.hp as f32 / bot.max_hp.max(1) as f32).clamp(0.0, 1.0);
-    if left > 0.0 {
-        let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * left, BAR));
-        painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
-    }
-    let bar = egui::Rect::from_min_size(
-        egui::pos2(at.x, at.y + 30.0),
-        egui::vec2(width, STAMINA_BAR),
-    );
-    painter.rect_filled(bar, STAMINA_BAR / 2.0, theme::HP_TRACK);
-    if alive && bot.stamina > 0.0 {
-        let filled = egui::Rect::from_min_size(
-            bar.min,
-            egui::vec2(bar.width() * bot.stamina.clamp(0.0, 1.0), STAMINA_BAR),
-        );
-        painter.rect_filled(filled, STAMINA_BAR / 2.0, theme::STAMINA);
-    }
-}
-
-/// The big text over the arena: countdown and result, shrunk to fit a
-/// narrow screen. Returns the box it took up.
-fn banner(
-    painter: &egui::Painter,
-    screen: egui::Rect,
-    snapshot: &Snapshot,
-    replay: &Replay,
-) -> Option<egui::Rect> {
+/// The big text over the arena: countdown and result.
+fn banner(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     let game = &snapshot.game;
     let text = match game.phase {
         Phase::Countdown => {
@@ -1864,15 +1799,173 @@ fn banner(
             Some(id) => format!("{} wins!", snapshot.name_of(id)),
             None => "Draw!".into(),
         },
-        Phase::Fighting | Phase::Prompting => return None,
+        Phase::Fighting | Phase::Prompting => return,
     };
-    let full = painter
-        .layout_no_wrap(text.clone(), theme::bold(theme::SIZE_BANNER), theme::TEXT)
-        .size();
-    let fit = ((screen.width() - 2.0 * EDGE) / full.x).min(1.0);
-    let size = theme::SIZE_BANNER * fit;
     // Top centre, clear of the arena.
-    let at = screen.center_top() + egui::vec2(0.0, EDGE + size / 2.0);
+    let at = screen.center_top() + egui::vec2(0.0, EDGE + theme::SIZE_BANNER / 2.0);
+    let size = if compact_view(screen.width()) {
+        (screen.width() / (text.chars().count().max(4) as f32 * 0.65)).min(38.0)
+    } else {
+        theme::SIZE_BANNER
+    };
+    let at = if compact_view(screen.width()) {
+        screen.center_top() + egui::vec2(0.0, 145.0)
+    } else {
+        at
+    };
     shadowed_text(painter, at, text, size, theme::TEXT);
-    Some(egui::Rect::from_center_size(at, full * fit))
+}
+
+/// A single row leaves room for writing and watching on a phone.
+fn compact_roster(
+    ctx: &egui::Context,
+    screen: egui::Rect,
+    snapshot: &Snapshot,
+    replay: &Replay,
+    dim: f32,
+    placing: &mut bool,
+    actions: &mut MessageWriter<Action>,
+) -> egui::Rect {
+    egui::Area::new(egui::Id::new("compact_room"))
+        .fixed_pos(screen.min + egui::Vec2::splat(EDGE))
+        .show(ctx, |ui| {
+            ui.multiply_opacity(dim);
+            if dim < 1.0 {
+                ui.disable();
+            }
+            box_frame().show(ui, |ui| {
+                ui.set_width(
+                    (screen.width() - 2.0 * EDGE - box_frame().total_margin().sum().x).max(100.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button("Players / room", |ui| {
+                        ui.set_max_width((screen.width() - 64.0).max(100.0));
+                        for player in snapshot.players.iter().filter(|p| p.online) {
+                            let (state, _) = bot_state(
+                                &snapshot.game,
+                                replay,
+                                player.id,
+                                snapshot.submission_of(player.id).map(|s| s.status),
+                            );
+                            if let Some(bot) = replay.bots.iter().find(|bot| bot.id == player.id) {
+                                ui.label(format!(
+                                    "{} · {} HP · {:.0}% stamina · {state}",
+                                    player.name,
+                                    bot.hp.max(0),
+                                    bot.stamina.clamp(0.0, 1.0) * 100.0
+                                ));
+                            } else {
+                                ui.label(format!("{} · {state}", player.name));
+                            }
+                        }
+                        let house_present = if snapshot.game.phase == Phase::Prompting {
+                            snapshot.game.house_bot
+                                && snapshot.players.iter().filter(|p| p.online).count()
+                                    < MAX_PLAYERS
+                        } else {
+                            replay.bots.iter().any(|bot| bot.id == HOUSE_BOT_ID)
+                        };
+                        if house_present {
+                            if let Some(bot) = replay.bots.iter().find(|bot| bot.id == HOUSE_BOT_ID)
+                            {
+                                let (state, _) = bot_state(
+                                    &snapshot.game,
+                                    replay,
+                                    HOUSE_BOT_ID,
+                                    Some(SubmissionStatus::Ready),
+                                );
+                                ui.label(format!(
+                                    "House bot · {} HP · {:.0}% stamina · {state}",
+                                    bot.hp.max(0),
+                                    bot.stamina.clamp(0.0, 1.0) * 100.0
+                                ));
+                            } else {
+                                ui.label("House bot · Ready");
+                            }
+                        }
+                        let shown_tick =
+                            (replay.phase_elapsed * snapshot.game.ticks_per_sec as f32) as u32;
+                        for fault in snapshot.faults.iter().filter(|fault| {
+                            snapshot.game.phase == Phase::Results
+                                || (snapshot.game.phase == Phase::Fighting
+                                    && fault.tick <= shown_tick)
+                        }) {
+                            ui.label(theme::error_body(format!(
+                                "{}: {}",
+                                snapshot.name_of(fault.player_id),
+                                fault.message
+                            )));
+                        }
+                        if snapshot.i_own_the_room() && snapshot.game.phase == Phase::Prompting {
+                            ui.separator();
+                            ui.label("Match length");
+                            ui.horizontal_wrapped(|ui| {
+                                for secs in MATCH_LENGTHS {
+                                    if ui
+                                        .selectable_label(
+                                            snapshot.game.match_secs == secs,
+                                            format!("{secs}s"),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.write(Action::SetRoomSettings {
+                                            match_secs: secs,
+                                            house_bot: snapshot.game.house_bot,
+                                        });
+                                    }
+                                }
+                            });
+                            let mut house_bot = snapshot.game.house_bot;
+                            if ui.checkbox(&mut house_bot, "House bot").changed() {
+                                actions.write(Action::SetRoomSettings {
+                                    match_secs: snapshot.game.match_secs,
+                                    house_bot,
+                                });
+                            }
+                            ui.separator();
+                            ui.label(small(format!(
+                                "Teleporters {}/{}",
+                                snapshot.teleporters.len(),
+                                teleporter::MAX
+                            )));
+                            if ui
+                                .selectable_label(
+                                    *placing,
+                                    if *placing {
+                                        "Done placing"
+                                    } else {
+                                        "Place teleporters"
+                                    },
+                                )
+                                .clicked()
+                            {
+                                *placing = !*placing;
+                                ui.close();
+                            }
+                        }
+                    });
+                    if snapshot.game.phase == Phase::Fighting {
+                        let elapsed = replay.phase_elapsed.min(
+                            snapshot.game.match_ticks as f32
+                                / snapshot.game.ticks_per_sec.max(1) as f32,
+                        );
+                        ui.label(format!(
+                            "{}s",
+                            (snapshot.game.match_secs as f32 - elapsed).ceil().max(0.0) as u32
+                        ));
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(theme::heading("Room"));
+                        ui.add(
+                            egui::Label::new(
+                                theme::heading(&snapshot.game.code).color(theme::INK_MUTED),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+            });
+        })
+        .response
+        .rect
 }

@@ -104,7 +104,7 @@ pub fn plugin(app: &mut App) {
             .zip(1..)
             .map(|((x, y), number)| pad(number, x, y))
             .collect(),
-        help: true,
+        help: false,
         style_editor: false,
     })
     .insert_resource(Screen::Entering)
@@ -300,7 +300,7 @@ fn publish_screen(sandbox: Res<Sandbox>, mut screen: ResMut<Screen>) {
         },
         Stage::JoinRefused => Screen::Join {
             known_name: Some("Ada".into()),
-            error: Some("Room \"den\" is full (4 players). Try another room id.".into()),
+            error: Some("Room \"den\" is full (4 players). Try another room ID.".into()),
         },
         Stage::Entering => Screen::Entering,
         stage => Screen::Room(Box::new(snapshot(&sandbox, stage))),
@@ -495,6 +495,29 @@ fn controls(
         return Ok(());
     }
     let now = time.elapsed_secs_f64();
+    if crate::ui::compact_view(ctx.viewport_rect().width()) && !ctx.text_edit_focused() {
+        // Touch-accessible stage picker for the phone testing harness.
+        egui::Area::new(egui::Id::new("sandbox_stages"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -112.0))
+            .show(ctx, |ui| {
+                theme::box_frame().show(ui, |ui| {
+                    ui.set_width(100.0);
+                    ui.menu_button("Test screen", |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                for (index, (stage, name)) in STAGES.iter().enumerate() {
+                                    if ui.selectable_label(sandbox.stage == index, *name).clicked()
+                                    {
+                                        sandbox.go(*stage, now);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                    });
+                });
+            });
+    }
 
     if !ctx.egui_wants_keyboard_input() {
         let pressed = |key| ctx.input(|input| input.key_pressed(key));

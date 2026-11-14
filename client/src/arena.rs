@@ -5,6 +5,8 @@
 //! two neighbouring frames and move one sphere per bot accordingly.
 
 use bevy::{
+    camera::{CameraProjection, SubCameraView},
+    math::Vec3A,
     mesh::{
         VertexAttributeValues,
         skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
@@ -16,7 +18,7 @@ use promptnite_bindings::{sdk::Table, *};
 use crate::{
     net::Conn,
     theme::{self, PALETTE},
-    ui::Screen,
+    ui::{ArenaUi, Screen},
 };
 
 /// What is on screen this frame. Written here, read by the UI for labels.
@@ -76,38 +78,73 @@ const STRATEGY_VIEW: View = View {
     focus: Vec3::new(0.0, 0.0, 4.5),
 };
 
-/// Writing a prompt in a narrow window (`ui::COMPACT_WIDTH`): no column to
-/// make room for, so no pan, and further away: the arena only has the gap
-/// between the players' list and the prompt sheet to show in.
-const COMPACT_STRATEGY_VIEW: View = View {
-    eye: Vec3::new(14.0, 49.0, 0.0),
-    focus: Vec3::ZERO,
-};
+/// Fits the arena between UI bands while rendering the scene behind them.
+/// The same matrix drives rendering, culling, and world-to-screen markers.
+#[derive(Debug, Clone)]
+struct UiProjection {
+    perspective: PerspectiveProjection,
+    reserved: f32,
+    bottom: bool,
+}
 
-/// The narrowest window (width over height) both views were composed for.
-/// The camera's field of view is vertical, so anything narrower would cut
-/// the arena's sides off.
-const COMPOSED_ASPECT: f32 = 1.25;
-
-/// `view` from behind edge `edge`, as world (eye, focus), for a window of
-/// `size`.
-/// The edge table must match `edge_direction` in `sim/src/rules.rs`.
-fn place(view: &View, edge: u32, size: Vec2) -> (Vec3, Vec3) {
-    let (mut eye, focus) = (view.eye, view.focus);
-    // A narrow window (a phone held upright): back off until the arena
-    // fits across it again. Wider windows keep the desktop views as composed.
-    let aspect = size.x / size.y.max(1.0);
-    if size.x < crate::ui::COMPACT_WIDTH && aspect < COMPOSED_ASPECT {
-        eye = focus + (eye - focus) * (COMPOSED_ASPECT / aspect);
+impl UiProjection {
+    fn extend(&self, matrix: Mat4) -> Mat4 {
+        Mat4::from_translation(Vec3::new(
+            0.0,
+            if self.bottom {
+                self.reserved
+            } else {
+                -self.reserved
+            },
+            0.0,
+        )) * Mat4::from_scale(Vec3::new(1.0, 1.0 - self.reserved, 1.0))
+            * matrix
     }
+}
+
+impl CameraProjection for UiProjection {
+    fn get_clip_from_view(&self) -> Mat4 {
+        self.extend(self.perspective.get_clip_from_view())
+    }
+
+    fn get_clip_from_view_for_sub(&self, sub: &SubCameraView) -> Mat4 {
+        self.extend(self.perspective.get_clip_from_view_for_sub(sub))
+    }
+
+    fn update(&mut self, width: f32, height: f32) {
+        self.perspective
+            .update(width, height * (1.0 - self.reserved));
+    }
+
+    fn far(&self) -> f32 {
+        self.perspective.far
+    }
+
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        let mut corners = self.perspective.get_frustum_corners(z_near, z_far);
+        let extended = if self.bottom {
+            [0, 3, 4, 7]
+        } else {
+            [1, 2, 5, 6]
+        };
+        for index in extended {
+            corners[index].y *= (1.0 + self.reserved) / (1.0 - self.reserved);
+        }
+        corners
+    }
+}
+
+/// `view` from behind edge `edge`, as world (eye, focus).
+/// The edge table must match `edge_direction` in `sim/src/rules.rs`.
+fn place(view: &View, edge: u32) -> (Vec3, Vec3) {
     let outward = outward(edge);
     let right = Vec3::Y.cross(outward);
     let world = |v: Vec3| outward * v.x + Vec3::Y * v.y + right * v.z;
-    (world(eye), world(focus))
+    (world(view.eye), world(view.focus))
 }
 
-fn camera_transform(edge: u32, size: Vec2) -> Transform {
-    let (eye, focus) = place(&FIGHT_VIEW, edge, size);
+fn camera_transform(edge: u32) -> Transform {
+    let (eye, focus) = place(&FIGHT_VIEW, edge);
     Transform::from_translation(eye).looking_at(focus, Vec3::Y)
 }
 
@@ -197,7 +234,7 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                point_of_view,
+                point_of_view.after(replay),
                 (
                     replay,
                     sync_bots,
@@ -476,8 +513,7 @@ fn setup(
     commands.spawn((
         ArenaCamera,
         Camera3d::default(),
-        // Any landscape size: `point_of_view` takes over from the first frame.
-        camera_transform(0, Vec2::new(1280.0, 720.0)),
+        camera_transform(0),
         theme::color_grading(),
         children![sky(&mut meshes, &mut materials)],
     ));
@@ -648,35 +684,89 @@ fn jiggle(
 pub fn point_of_view(
     time: Res<Time>,
     screen: Res<Screen>,
+    ui: Res<ArenaUi>,
     mut spring: ResMut<CameraSpring>,
+    replay: Res<Replay>,
     window: Single<&Window>,
-    mut camera: Single<&mut Transform, With<ArenaCamera>>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
 ) {
     // Stiffness, and damping just under critical for the overshoot.
     const STIFFNESS: f32 = 70.0;
     const DAMPING: f32 = 0.7 * 2.0 * 8.366; // 0.7 × 2√STIFFNESS
 
-    let size = window.size();
     let Screen::Room(snapshot) = &*screen else {
-        // Before the first room the camera only has to fit the window.
-        if spring.at.is_none() {
-            **camera = camera_transform(0, size);
-        }
+        *camera.1 = Projection::Perspective(PerspectiveProjection::default());
         return;
     };
     // Only while the prompt box is open, as in `ui::draw`: nothing sent
     // yet this round, or the last try failed.
     let writing = snapshot.game.phase == Phase::Prompting
+        && !(ui.placing && crate::ui::compact_view(window.width()))
         && matches!(
             snapshot.submission_of(snapshot.me.id).map(|s| s.status),
             None | Some(SubmissionStatus::Failed)
         );
-    let view = match (writing, size.x < crate::ui::COMPACT_WIDTH) {
-        (true, true) => &COMPACT_STRATEGY_VIEW,
-        (true, false) => &STRATEGY_VIEW,
-        (false, _) => &FIGHT_VIEW,
+    let view = if writing { &STRATEGY_VIEW } else { &FIGHT_VIEW };
+    let compact = crate::ui::compact_view(window.width());
+    let reserved = if compact && writing {
+        (112.0 + window.height() * 0.48)
+            .min(window.height() - 80.0)
+            .max(0.0)
+    } else {
+        0.0
     };
-    let (eye, focus) = place(view, snapshot.me.edge, size);
+    let bottom = !compact
+        && window.height() < 600.0
+        && matches!(snapshot.game.phase, Phase::Fighting | Phase::Results);
+    let reserved = if bottom {
+        let reveal = if snapshot.game.phase == Phase::Results {
+            1.0
+        } else {
+            crate::ui::bot_tab_reveal(replay.phase_elapsed, 0)
+        };
+        (crate::ui::BOT_TAB_HEIGHT + crate::theme::EDGE).min((window.height() - 80.0).max(0.0))
+            * reveal
+    } else {
+        reserved
+    };
+    let mut projection = if reserved > 0.0 {
+        Projection::custom(UiProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: reserved / window.height().max(1.0),
+            bottom,
+        })
+    } else {
+        Projection::Perspective(PerspectiveProjection::default())
+    };
+    projection.update(window.width().max(1.0), window.height().max(1.0));
+    *camera.1 = projection;
+    let aspect = window.width() / (window.height() - reserved).max(1.0);
+    let view = if compact {
+        // Fit the arena's width, then bring portrait framing 15% closer
+        // to leave less empty space along its sides.
+        let portrait_zoom = if window.height() > window.width() {
+            0.85
+        } else {
+            1.0
+        };
+        let distance = (1.25 / aspect.max(0.3)).max(1.0) * portrait_zoom;
+        View {
+            eye: Vec3::new(19.0, 26.0, 0.0) * distance,
+            focus: Vec3::ZERO,
+        }
+    } else {
+        View {
+            eye: view.eye,
+            // Look slightly lower to lift the rooftop above the desktop tabs.
+            focus: view.focus
+                - if !bottom && matches!(snapshot.game.phase, Phase::Fighting | Phase::Results) {
+                    Vec3::Y * 4.5
+                } else {
+                    Vec3::ZERO
+                },
+        }
+    };
+    let (eye, focus) = place(&view, snapshot.me.edge);
     let (mut at, mut focus_at) = spring.at.unwrap_or((eye, focus));
     // A long frame (a hitch, a hidden tab) must not fling the camera.
     let dt = time.delta_secs().min(1.0 / 30.0);
@@ -690,7 +780,7 @@ pub fn point_of_view(
     }
     spring.at = Some((at, focus_at));
     spring.velocity = (v_eye, v_focus);
-    **camera = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
+    *camera.0 = Transform::from_translation(at).looking_at(focus_at, Vec3::Y);
 }
 
 /// Decide which tick to show and blend the frames around it. Without a
@@ -1244,4 +1334,93 @@ fn slash_mesh() -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; count])
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+#[cfg(test)]
+mod portrait_projection_tests {
+    use super::*;
+
+    #[test]
+    fn full_screen_projection_keeps_arena_in_lower_region() {
+        for (width, height, reserved) in [(390.0, 844.0, 517.0), (320.0, 568.0, 385.0)] {
+            let mut old = PerspectiveProjection::default();
+            old.update(width, height - reserved);
+            let mut full = UiProjection {
+                perspective: PerspectiveProjection::default(),
+                reserved: reserved / height,
+                bottom: false,
+            };
+            full.update(width, height);
+            for point in [
+                Vec3::new(-3.0, 2.0, -30.0),
+                Vec3::new(4.0, -3.0, -50.0),
+                Vec3::new(0.0, 0.0, -20.0),
+            ] {
+                let before = old.get_clip_from_view().project_point3(point);
+                let after = full.get_clip_from_view().project_point3(point);
+                let expected = Vec2::new(
+                    (before.x + 1.0) * width / 2.0,
+                    reserved + (1.0 - before.y) * (height - reserved) / 2.0,
+                );
+                let actual = Vec2::new(
+                    (after.x + 1.0) * width / 2.0,
+                    (1.0 - after.y) * height / 2.0,
+                );
+                assert!(expected.distance(actual) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn culling_corners_match_visible_full_screen_edges() {
+        let mut full = UiProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: 0.61,
+            bottom: false,
+        };
+        full.update(390.0, 844.0);
+        let edges = [
+            Vec2::new(1.0, -1.0),
+            Vec2::ONE,
+            Vec2::new(-1.0, 1.0),
+            -Vec2::ONE,
+        ];
+        for bottom in [false, true] {
+            full.bottom = bottom;
+            for (index, corner) in full
+                .get_frustum_corners(-0.1, -1000.0)
+                .into_iter()
+                .enumerate()
+            {
+                let projected = full.get_clip_from_view().project_point3(corner.into());
+                assert!(projected.truncate().distance(edges[index % 4]) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn short_landscape_arena_stays_above_bottom_dock() {
+        let (width, height, reserved) = (844.0, 390.0, 164.0);
+        let mut old = PerspectiveProjection::default();
+        old.update(width, height - reserved);
+        let mut full = UiProjection {
+            perspective: PerspectiveProjection::default(),
+            reserved: reserved / height,
+            bottom: true,
+        };
+        full.update(width, height);
+        for point in [Vec3::new(-3.0, 2.0, -30.0), Vec3::new(4.0, -3.0, -50.0)] {
+            let before = old.get_clip_from_view().project_point3(point);
+            let after = full.get_clip_from_view().project_point3(point);
+            let expected = Vec2::new(
+                (before.x + 1.0) * width / 2.0,
+                (1.0 - before.y) * (height - reserved) / 2.0,
+            );
+            let actual = Vec2::new(
+                (after.x + 1.0) * width / 2.0,
+                (1.0 - after.y) * height / 2.0,
+            );
+            assert!(expected.distance(actual) < 0.001);
+        }
+    }
 }
