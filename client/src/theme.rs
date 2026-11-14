@@ -310,6 +310,9 @@ pub fn style_editor(ctx: &egui::Context, open: &mut bool) {
 
 // Effects (`fx.rs`): a knocked-out bot blows up.
 
+/// Bright cartoon dust for the burst at dash start.
+pub const FX_DASH_DUST: Color = Color::WHITE;
+
 /// Explosion puffs, hottest first: core, flame, outer flame, smoke.
 pub const FX_PUFF: [Color; 4] = [
     Color::srgb(1.0, 0.98, 0.9),

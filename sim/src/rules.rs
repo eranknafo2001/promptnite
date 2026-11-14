@@ -76,7 +76,7 @@ pub const ATTACK_STAMINA_COST: i32 = 15;
 pub const DASH_STAMINA_COST: i32 = 20;
 
 /// A `dash` covers this many times the distance of a `walk`.
-pub const DASH_SPEED_FACTOR: f32 = 3.0;
+pub const DASH_SPEED_FACTOR: f32 = 3.6;
 // --- Teleporters -----------------------------------------------------------
 
 /// Most teleporter pads a room's owner may place.

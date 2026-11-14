@@ -1504,6 +1504,7 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
 }
 
 /// Individual tabs docked to the bottom edge during combat and results.
+/// Health and the thin stamina strip share one rounded wrapper.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     if matches!(snapshot.game.phase, Phase::Prompting | Phase::Countdown) {
         loadout_cards(painter, screen, snapshot);
@@ -1575,33 +1576,30 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
             egui::FontId::proportional(theme::SIZE_SMALL),
             theme::INK_MUTED,
         );
+        const BAR: f32 = 10.0;
+        const STAMINA_BAR: f32 = 2.0;
         let bar = egui::Rect::from_min_size(
             inner.left_top() + egui::vec2(0.0, 49.0),
-            egui::vec2(inner.width(), 6.0),
+            egui::vec2(inner.width(), BAR),
         );
         painter.rect_filled(bar, 3.0, theme::HP_TRACK);
         let health = (bot.hp as f32 / bot.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            painter.rect_filled(
-                egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height())),
-                3.0,
-                color,
+            let filled = egui::Rect::from_min_size(
+                bar.min + egui::vec2(0.0, STAMINA_BAR),
+                egui::vec2(bar.width() * health, BAR - STAMINA_BAR),
             );
+            // Square depletion edges inside a shared rounded silhouette.
+            painter.with_clip_rect(filled).rect_filled(bar, 3.0, color);
         }
-        let stamina = egui::Rect::from_min_size(
-            inner.left_top() + egui::vec2(0.0, 58.0),
-            egui::vec2(inner.width(), 4.0),
-        );
-        painter.rect_filled(stamina, 2.0, theme::HP_TRACK);
         if alive && bot.stamina > 0.0 {
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    stamina.min,
-                    egui::vec2(stamina.width() * bot.stamina.clamp(0.0, 1.0), 4.0),
-                ),
-                2.0,
-                theme::STAMINA,
+            let filled = egui::Rect::from_min_size(
+                bar.min,
+                egui::vec2(bar.width() * bot.stamina.clamp(0.0, 1.0), STAMINA_BAR),
             );
+            painter
+                .with_clip_rect(filled)
+                .rect_filled(bar, 3.0, theme::STAMINA);
         }
         let balanced = [2, 2, 2, 2, 2];
         let points = snapshot
