@@ -50,6 +50,7 @@ const MAX_ROOM_CHARS: usize = 24;
 const MAX_PROMPT_CHARS: usize = 2_000;
 const JOIN_CONTROL_HEIGHT: f32 = 44.0;
 const JOIN_CONTROL_GAP: f32 = 8.0;
+const BOT_PANEL_WIDTH: f32 = 350.0;
 /// Match lengths the owner can pick from, in seconds. The server accepts
 /// anything within its own limits (`sim/src/rules.rs`).
 const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
@@ -1115,8 +1116,17 @@ fn match_timer(
         egui::FontId::monospace(theme::SIZE_TIMER),
         theme::INK,
     );
+    // In a short landscape window the bot panel reaches the top edge.
+    // Use the gap beside it so the timer cannot cover its heading.
+    let x = screen.left()
+        + EDGE
+        + if screen.height() < 500.0 {
+            BOT_PANEL_WIDTH + EDGE
+        } else {
+            0.0
+        };
     let outer = egui::Rect::from_min_size(
-        screen.min + egui::Vec2::splat(EDGE),
+        egui::pos2(x, screen.top() + EDGE),
         text.size() + PADDING * 2.0,
     );
     theme::panel(painter, outer);
@@ -1239,7 +1249,6 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
         loadout_cards(painter, screen, snapshot);
         return;
     }
-    const WIDTH: f32 = 350.0;
     const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
     const HEADING: f32 = 30.0;
     const ROW: f32 = 78.0;
@@ -1254,7 +1263,7 @@ fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, r
     let height = PADDING.y * 2.0 + HEADING + ROW * (replay.bots.len() - 1) as f32 + LAST_ROW;
     let outer = egui::Rect::from_min_size(
         egui::pos2(screen.left() + EDGE, screen.center().y - height / 2.0),
-        egui::vec2(WIDTH, height),
+        egui::vec2(BOT_PANEL_WIDTH, height),
     );
     theme::panel(painter, outer);
     let inner = outer.shrink2(PADDING);
@@ -1424,7 +1433,7 @@ fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapsho
     });
     let outer = egui::Rect::from_min_size(
         egui::pos2(screen.left() + EDGE, screen.center().y - 65.0),
-        egui::vec2(350.0, 140.0),
+        egui::vec2(BOT_PANEL_WIDTH, 140.0),
     );
     theme::panel(painter, outer);
     let inner = outer.shrink(16.0);

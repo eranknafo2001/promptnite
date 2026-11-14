@@ -452,7 +452,7 @@ fn controls(
     let now = time.elapsed_secs_f64();
     // Touch-accessible stage picker for the phone testing harness.
     egui::Area::new(egui::Id::new("sandbox_stages"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -44.0))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -112.0))
         .show(ctx, |ui| {
             theme::box_frame().show(ui, |ui| {
                 ui.set_width(100.0);
