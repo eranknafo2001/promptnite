@@ -44,6 +44,12 @@ pub enum Action {
         dx: f32,
         dy: f32,
     },
+    /// Hold the shield up for this tick. The direction works like `Walk`'s
+    /// and may be left out, to stand still behind it.
+    Shield {
+        dx: f32,
+        dy: f32,
+    },
     Attack,
 }
 
@@ -58,6 +64,8 @@ pub enum ActionKind {
     /// Swung at nothing (out of range, on cooldown or out of stamina).
     Miss,
     Dead,
+    /// Had the shield up, moving or not.
+    Shield,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,6 +110,8 @@ struct Bot {
     hp: i32,
     stamina: i32,
     cooldown: u32,
+    /// Whether the shield was up on the last tick applied.
+    shielding: bool,
     /// Whether a pad takes the bot. Not after a jump, until it has stepped
     /// off the pad it came out of: otherwise it would never stop jumping.
     teleports: bool,
@@ -210,6 +220,7 @@ pub fn run_match(
                 hp: stats.max_hp,
                 stamina: rules::MAX_STAMINA,
                 cooldown: 0,
+                shielding: false,
                 teleports: true,
                 faulted: lua.is_none(),
                 lua,
@@ -244,31 +255,45 @@ pub fn run_match(
         // Who paid stamina this tick. Everybody else wins some back at the end.
         let mut spent = vec![false; bots.len()];
 
-        // 2. Movement.
+        // 2. Movement, and shields: one is up for the tick it is asked for.
 
         let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
-            let (dx, dy, dash) = match actions[i] {
-                Action::Walk { dx, dy } => (dx, dy, false),
-                Action::Dash { dx, dy } => (dx, dy, true),
+            bot.shielding = false;
+            let (dx, dy, wants) = match actions[i] {
+                Action::Walk { dx, dy } => (dx, dy, ActionKind::Walk),
+                Action::Dash { dx, dy } => (dx, dy, ActionKind::Dash),
+                Action::Shield { dx, dy } => (dx, dy, ActionKind::Shield),
                 _ => continue,
             };
-            let len = (dx * dx + dy * dy).sqrt();
-            if !bot.alive() || len <= 1e-6 {
+            if !bot.alive() {
                 continue;
             }
+            let len = (dx * dx + dy * dy).sqrt();
+            let moving = len > 1e-6;
             let mut step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
-            // A dash the bot cannot pay for is a walk.
-            if dash && bot.stamina >= rules::DASH_STAMINA_COST {
-                bot.stamina -= rules::DASH_STAMINA_COST;
-                spent[i] = true;
-                step *= rules::DASH_SPEED_FACTOR;
-                did[i] = ActionKind::Dash;
-            } else {
-                did[i] = ActionKind::Walk;
+            // A dash or a shield the bot cannot pay for is a walk.
+            match wants {
+                ActionKind::Shield if bot.stamina >= rules::SHIELD_STAMINA_COST => {
+                    bot.stamina -= rules::SHIELD_STAMINA_COST;
+                    spent[i] = true;
+                    bot.shielding = true;
+                    step *= rules::SHIELD_SPEED_FACTOR;
+                    did[i] = ActionKind::Shield;
+                }
+                ActionKind::Dash if moving && bot.stamina >= rules::DASH_STAMINA_COST => {
+                    bot.stamina -= rules::DASH_STAMINA_COST;
+                    spent[i] = true;
+                    step *= rules::DASH_SPEED_FACTOR;
+                    did[i] = ActionKind::Dash;
+                }
+                _ if moving => did[i] = ActionKind::Walk,
+                _ => {}
             }
-            bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
-            bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
+            if moving {
+                bot.x = (bot.x + dx / len * step).clamp(-limit, limit);
+                bot.y = (bot.y + dy / len * step).clamp(-limit, limit);
+            }
         }
         separate(&mut bots, limit);
         // After the shoving, so a bot can be pushed onto a pad. Part of
@@ -303,7 +328,8 @@ pub fn run_match(
             }
         }
         for (i, bot) in bots.iter_mut().enumerate() {
-            if bot.alive() && damage[i] > 0 {
+            // A shield takes the whole hit.
+            if bot.alive() && damage[i] > 0 && !bot.shielding {
                 bot.hp = (bot.hp - damage[i]).max(0);
                 if !bot.alive() {
                     did[i] = ActionKind::Dead;
@@ -352,6 +378,7 @@ fn decide(
             y: other.y,
             hp: other.hp,
             stamina: other.stamina,
+            shielding: other.shielding,
             dist: distance(me, other),
         })
         .collect();
@@ -365,6 +392,7 @@ fn decide(
             y: me.y,
             hp: me.hp,
             stamina: me.stamina,
+            shielding: me.shielding,
             dist: 0.0,
         },
         cooldown: me.cooldown,
@@ -681,6 +709,43 @@ mod tests {
                 assert_eq!(after.stamina, before.stamina + rules::STAMINA_REGEN);
             }
         }
+    }
+
+    #[test]
+    fn shield_blocks_hits_slows_the_bot_and_burns_stamina() {
+        // Raises its shield whenever the chaser is close, until it cannot pay.
+        let turtle = r#"
+            local was = false
+            function tick(state)
+              assert(state.me.shielding == was)
+              was = state.enemies[1].dist < 2 and state.me.stamina >= state.rules.shield_stamina_cost
+              if state.enemies[1].dist < 2 then return "shield" end
+            end
+        "#;
+        let outcome = run_match(&[spec(1, turtle), spec(2, EXAMPLE_SCRIPT)], 0);
+        assert!(outcome.faults.is_empty(), "{:?}", outcome.faults);
+        let frames = &outcome.frames;
+        let up = |f: &Frame| f.bots[0].action == ActionKind::Shield;
+        let first = frames.iter().position(up).unwrap();
+        let held = (rules::MAX_STAMINA / rules::SHIELD_STAMINA_COST) as usize;
+        let last = first + held - 1;
+        assert!(frames[first..=last].iter().all(up));
+        assert!(
+            frames[first..=last]
+                .iter()
+                .any(|f| f.bots[1].action == ActionKind::Attack)
+        );
+        assert_eq!(frames[last].bots[0].hp, rules::MAX_HP);
+        assert_eq!(frames[last].bots[0].stamina, 0);
+        // Out of stamina: the shield is down, and the hits land.
+        assert_eq!(frames[last + 1].bots[0].action, ActionKind::Idle);
+        assert_eq!(outcome.winner, Some(2));
+
+        let creeper = r#"function tick() return { action = "shield", dx = -1, dy = 0 } end"#;
+        let outcome = super::run_match(&[spec(1, creeper), spec(2, IDLE)], &[], 0, 1);
+        let moved = outcome.frames[0].bots[0].x - outcome.frames[1].bots[0].x;
+        let walk = rules::WALK_SPEED / rules::TICKS_PER_SEC as f32;
+        assert!((moved - walk * rules::SHIELD_SPEED_FACTOR).abs() < 1e-3);
     }
 
     #[test]

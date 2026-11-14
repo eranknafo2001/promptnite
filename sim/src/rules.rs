@@ -89,6 +89,13 @@ pub const TELEPORTER_RADIUS: f32 = 0.9;
 /// Two pads' centres are at least this far apart, so pads never overlap.
 pub const TELEPORTER_SPACING: f32 = 2.5;
 
+/// What every tick with the shield up costs. A bot with less cannot raise
+/// it. More than a tick wins back, so no bot hides behind it for ever.
+pub const SHIELD_STAMINA_COST: i32 = 5;
+
+/// A bot behind its shield moves this many times the distance of a `walk`.
+pub const SHIELD_SPEED_FACTOR: f32 = 0.5;
+
 // --- Sandbox limits for untrusted Lua -------------------------------------
 
 /// Fuel a script may spend while loading (top-level code). The VM charges

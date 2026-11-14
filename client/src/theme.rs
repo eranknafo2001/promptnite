@@ -69,6 +69,9 @@ pub const HIT_FLASH: Color = Color::srgb(1.0, 0.55, 0.1);
 /// A dagger swing's trail: a warm white.
 pub const SLASH: Color = Color::srgb(1.0, 0.85, 0.65);
 
+/// The bubble round a bot whose shield is up: a see-through cold blue.
+pub const SHIELD: Color = Color::srgba(0.55, 0.85, 1.0, 0.35);
+
 /// A teleporter pad: its dark dish, and the light of its segments and flame.
 pub const TELEPORTER_METAL: Color = Color::srgb(0.2, 0.23, 0.27);
 pub const TELEPORTER_GLOW: Color = Color::srgb(0.1, 0.88, 1.0);

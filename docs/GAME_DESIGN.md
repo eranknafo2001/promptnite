@@ -59,6 +59,7 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
 | dash | `{ action = "dash", dx = 1, dy = 0 }` | A step three times as long, for stamina |
+| shield | `{ action = "shield", dx = 1, dy = 0 }` | Block every hit this tick, for stamina; the step is optional and half as long |
 | attack | `{ action = "attack" }` | Punch the nearest enemy in range, for stamina |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
@@ -82,14 +83,15 @@ Dash is the original sketch's **run**; stamina is what it costs.
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, stamina, cooldown }
-  -- state.enemies { { id, x, y, hp, stamina, dist }, ... }   living enemies only
+  -- state.me      { id, x, y, hp, stamina, shielding, cooldown }
+  -- state.enemies { { id, x, y, hp, stamina, shielding, dist }, ... }   living enemies only
   -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
   --                 attack_damage, attack_cooldown, max_hp, max_stamina,
   --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
-  --                 dash_speed, teleporter_radius }
+  --                 dash_speed, shield_stamina_cost, shield_speed,
+  --                 teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
 ```
@@ -111,6 +113,12 @@ Globals persist between ticks, so a script can remember things.
   back. A bot that cannot pay for a swing does not swing, and one that cannot
   pay for a dash walks. Swinging flat out costs more than it wins back, so a
   bot that never lets up runs dry and then swings less often.
+- A shield is up for the tick a bot asks for it and costs 5 stamina each
+  time. No hit lands on a bot behind one (the attacker still pays for the
+  swing). The bot may move while it holds it, at half its walking speed. With
+  less than 5 stamina the shield stays down and the action is a walk. Held
+  without a break it lasts 2 seconds from full. `shielding` says whether a
+  bot's shield was up on the tick before.
 - Attacks in the same tick land simultaneously, so a double knockout is
   possible.
 - Last bot standing wins. At the time limit the bot with the most hp wins; a

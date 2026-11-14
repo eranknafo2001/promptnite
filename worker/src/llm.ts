@@ -77,25 +77,26 @@ Define one global function, \`tick(state)\`. The game calls it once per simulati
 
 - \`{ action = "walk", dx = <number>, dy = <number> }\` walks one step in the direction (dx, dy). Only the direction matters, not the length.
 - \`{ action = "dash", dx = <number>, dy = <number> }\` is a walk that covers three times the distance (\`state.rules.dash_speed\`) and costs \`state.rules.dash_stamina_cost\` stamina. With less stamina than that it is an ordinary walk.
+- \`{ action = "shield", dx = <number>, dy = <number> }\` holds a shield up for this tick and costs \`state.rules.shield_stamina_cost\` stamina. No attack damages the bot on a tick its shield is up. \`dx\` and \`dy\` are optional: with them the bot also moves, at half its walking speed (\`state.rules.shield_speed\`); without them it stands still. With less stamina than the cost the shield stays down and the action is an ordinary walk (or nothing, without a direction). The shield only lasts for ticks that return this action, so return it every tick it should stay up.
 - \`{ action = "attack" }\` punches the nearest enemy within \`state.rules.attack_range\` and costs \`state.rules.attack_stamina_cost\` stamina, hit or miss. It misses if nobody is in range and does nothing while \`state.me.cooldown > 0\` or \`state.me.stamina\` is below the cost.
 - \`{ action = "idle" }\` (or returning nil) does nothing.
 
-A bot does exactly one of these per tick: it cannot walk and attack in the same tick.
+A bot does exactly one of these per tick: it cannot walk and attack in the same tick, or attack from behind its shield.
 
 There is no teleport action. Teleporting happens to a bot: it is part of moving, so each tick it comes after every bot has walked or dashed and before any punch lands. A bot that is then closer than \`state.rules.teleporter_radius\` to a pad's centre is moved to the exact centre of pad \`to\`, whether it walked there or an enemy pushed it there (bots are solid and push each other). To use a pad, walk towards its \`x, y\`; to avoid one, keep \`dist\` above the radius. The pad a bot comes out of does not take it until it has walked off that pad; walking back on then sends it one pad further. To go from pad A to a pad that A does not lead to, ride the ring: step off each pad you come out of and back on. Enemies teleport the same way, so one whose position suddenly changes has gone through a pad.
 
 ## Stamina
 
-Every bot, whatever its build, starts with \`state.rules.max_stamina\` (100) stamina and never holds more. A dash costs 20 and a swing costs 15. On every tick a bot spends none (walking, idling, or asking for something it cannot do) it gets \`state.rules.stamina_regen\` (2) back. A bot that swings every time its cooldown allows spends more than it gets back and runs dry, after which it can only swing every few ticks, so pace attacks and dashes: check \`state.me.stamina\` before relying on either, and back off or walk to recover. Enemies' stamina is visible, so a bot can tell when an enemy is too tired to swing or dash.
+Every bot, whatever its build, starts with \`state.rules.max_stamina\` (100) stamina and never holds more. A dash costs 20, a swing costs 15 and each tick behind the shield costs 5. On every tick a bot spends none (walking, idling, or asking for something it cannot do) it gets \`state.rules.stamina_regen\` (2) back. A bot that swings every time its cooldown allows spends more than it gets back and runs dry, after which it can only swing every few ticks, so pace attacks and dashes: check \`state.me.stamina\` before relying on either, and back off or walk to recover. A shield held without a break empties full stamina in 20 ticks and leaves nothing to swing with, so raise it for the ticks an enemy in range is likely to swing, not all the time. Enemies' stamina is visible, so a bot can tell when an enemy is too tired to swing, dash or shield, and \`shielding\` tells whether an enemy's shield was up on the previous tick: a swing at a shielded enemy is wasted.
 
 \`state\` is rebuilt every tick:
 
 - \`state.tick\`: current step, starting at 1.
-- \`state.me\`: \`{ id, x, y, hp, stamina, cooldown }\`. \`cooldown\` is the number of ticks until this bot can attack again.
-- \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, stamina, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
+- \`state.me\`: \`{ id, x, y, hp, stamina, shielding, cooldown }\`. \`shielding\` is true if the shield was up on the previous tick. \`cooldown\` is the number of ticks until this bot can attack again.
+- \`state.enemies\`: array of living enemies, each \`{ id, x, y, hp, stamina, shielding, dist }\`, where \`dist\` is the distance from this bot. Empty when no enemy is left.
 - \`state.teleporters\`: array of teleporter pads, each \`{ id, x, y, dist, to }\`, sorted by \`id\`. The room's owner places them, so there may be none. Players see each pad's \`id\` as the number on it and may refer to pads by it. \`to\` is the \`id\` of the pad this one leads to: always the next \`id\` in the array, and the first one after the last. It is nil when there is only one pad, which does nothing.
 - \`state.arena\`: \`{ half_size }\`. The arena spans -half_size..half_size on both axes and bots cannot leave it. Up to four bots fight, each starting at the middle of a different edge.
-- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp, max_stamina, stamina_regen, attack_stamina_cost, dash_stamina_cost, dash_speed, teleporter_radius }\`. \`walk_speed\` and \`dash_speed\` are in units per second.
+- \`state.rules\`: \`{ ticks_per_sec, max_ticks, walk_speed, attack_range, attack_damage, attack_cooldown, max_hp, max_stamina, stamina_regen, attack_stamina_cost, dash_stamina_cost, dash_speed, shield_stamina_cost, shield_speed, teleporter_radius }\`. \`walk_speed\`, \`dash_speed\` and \`shield_speed\` are in units per second.
 
 The last bot standing wins. If the match reaches \`max_ticks\`, the bot with the most hp wins.
 

@@ -19,6 +19,8 @@ pub enum BotAction {
     Dead,
 
     Dash,
+
+    Shield,
 }
 
 impl __sdk::InModule for BotAction {
