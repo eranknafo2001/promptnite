@@ -9,7 +9,7 @@
 //!
 //! Round loop (each room runs its own):
 //!
-//!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --8s--> Prompting
+//!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --owner clicks Next round--> Prompting
 //!
 //! The LLM call does *not* happen here: a module's HTTP requests are cut off
 //! after 500 ms. Instead the module pokes an agent worker (`worker/`, a
@@ -46,7 +46,6 @@ use spacetimedb::{
 };
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
-const RESULTS: Duration = Duration::from_secs(8);
 /// The round a new room starts in, and one everybody left starts over from.
 const FIRST_ROUND: u32 = 1;
 const MAX_PROMPT_CHARS: usize = 2_000;
@@ -624,6 +623,39 @@ pub fn set_room_settings(
     });
     // Switching the house bot on may be all a lone, ready player was missing.
     try_start_match(ctx, room_id);
+    Ok(())
+}
+
+/// Start another round when the room owner is ready.
+#[reducer]
+pub fn next_round(ctx: &ReducerContext) -> Result<(), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.owner != player.id {
+        return Err("Only the room's owner can start the next round".into());
+    }
+    if room.phase != Phase::Results {
+        return Err("The round must finish before starting the next one".into());
+    }
+    let entries: Vec<u32> = ctx
+        .db
+        .submission()
+        .room_id()
+        .filter(room.id)
+        .map(|row| row.player_id)
+        .collect();
+    // The scripts stay: sending the same prompt again next round
+    // reuses the bot instead of asking the agent for a new one.
+    for player_id in entries {
+        ctx.db.submission().player_id().delete(player_id);
+        ctx.db.agent_job().player_id().delete(player_id);
+    }
+    ctx.db.room().id().update(Room {
+        round: room.round + 1,
+        phase: Phase::Prompting,
+        phase_ends_at: None,
+        winner: None,
+        ..room
+    });
     Ok(())
 }
 
@@ -1274,38 +1306,14 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
             );
         }
         Phase::Results => {
-            let ends_at = ctx.timestamp + RESULTS;
             ctx.db.room().id().update(Room {
                 phase: Phase::Results,
-                phase_ends_at: Some(ends_at),
+                phase_ends_at: None,
                 winner: timer.winner,
                 ..room
             });
-            schedule(ctx, ends_at, room_id, timer.round, Phase::Prompting, None);
         }
-        Phase::Prompting => {
-            let entries: Vec<u32> = ctx
-                .db
-                .submission()
-                .room_id()
-                .filter(room_id)
-                .map(|row| row.player_id)
-                .collect();
-            // The scripts stay: sending the same prompt again next round
-            // reuses the bot instead of asking the agent for a new one.
-            for player_id in entries {
-                ctx.db.submission().player_id().delete(player_id);
-                ctx.db.agent_job().player_id().delete(player_id);
-            }
-            ctx.db.room().id().update(Room {
-                round: room.round + 1,
-                phase: Phase::Prompting,
-                phase_ends_at: None,
-                winner: None,
-                ..room
-            });
-        }
-        Phase::Countdown => {}
+        Phase::Prompting | Phase::Countdown => {}
     }
     Ok(())
 }

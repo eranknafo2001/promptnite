@@ -255,6 +255,7 @@ fn perform(mut actions: MessageReader<Action>, mut sandbox: ResMut<Sandbox>, tim
         match action {
             Action::Join { .. } => sandbox.go(Stage::Prompting, now),
             Action::SubmitPrompt(_) => sandbox.go(Stage::Generating, now),
+            Action::NextRound => sandbox.go(Stage::Prompting, now),
             Action::SetRoomSettings {
                 match_secs,
                 house_bot,
@@ -398,14 +399,14 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
 }
 
 /// A made-up brawl: everyone walks in from their edge, circles the middle
-/// trading punches, and two of them go down. Between rounds the last frame
-/// stays up, like in the real game.
+/// trading punches, and two of them go down. Results keep the final stats
+/// for the UI; prompting starts with an empty arena.
 fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
     let t = match sandbox.stage() {
         Stage::Countdown => 0.0,
         Stage::Fighting => replay.phase_elapsed.min(FIGHT_SECS),
-        Stage::Connecting | Stage::Join | Stage::JoinRefused | Stage::Entering => return,
-        _ => FIGHT_SECS,
+        Stage::Results => FIGHT_SECS,
+        _ => return,
     };
     let counting_down = sandbox.stage() == Stage::Countdown;
 

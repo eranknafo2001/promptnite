@@ -217,6 +217,7 @@ fn perform(
                 },
                 Some(conn),
             ) => conn.reducers().set_room_settings(match_secs, house_bot),
+            (Action::NextRound, Some(conn)) => conn.reducers().next_round(),
             (Action::AddTeleporter { x, y }, Some(conn)) => conn.reducers().add_teleporter(x, y),
             (Action::RemoveTeleporter(number), Some(conn)) => {
                 conn.reducers().remove_teleporter(number)

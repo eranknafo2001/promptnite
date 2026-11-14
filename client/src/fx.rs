@@ -5,11 +5,12 @@
 use std::collections::HashSet;
 
 use bevy::prelude::*;
-use promptnite_bindings::BotAction;
+use promptnite_bindings::{BotAction, Phase};
 
 use crate::{
     arena::{self, Replay},
     theme,
+    ui::Screen,
 };
 
 pub fn plugin(app: &mut App) {
@@ -18,8 +19,9 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                deaths,
-                dash_dust,
+                clear_round_effects,
+                deaths.run_if(fighting),
+                dash_dust.run_if(fighting),
                 dust,
                 puffs,
                 debris,
@@ -112,9 +114,33 @@ fn around(seed: u32) -> Vec3 {
     Vec3::new(angle.cos(), 0.0, angle.sin())
 }
 
+fn fighting(screen: Res<Screen>) -> bool {
+    matches!(&*screen, Screen::Room(snapshot) if snapshot.game.phase == Phase::Fighting)
+}
+
+type RoundEffects = Or<(With<Puff>, With<Dust>, With<Chunk>)>;
+
+/// Round effects belong to the fight; portals and the rooftop are separate entities.
+fn clear_round_effects(
+    mut commands: Commands,
+    screen: Res<Screen>,
+    effects: Query<Entity, RoundEffects>,
+    mut state: ResMut<FxState>,
+) {
+    if fighting(screen) {
+        return;
+    }
+    for entity in &effects {
+        commands.entity(entity).despawn();
+    }
+    state.dead.clear();
+    state.dashing.clear();
+    state.replay_elapsed = 0.0;
+    state.trauma = 0.0;
+}
+
 /// Blow up bots that were alive last frame and are dead now. Bots dead the
-/// first time we see them (joining mid-results, Prompting showing the last
-/// frame) don't count.
+/// first time we see them don't count.
 fn deaths(
     mut commands: Commands,
     replay: Res<Replay>,
