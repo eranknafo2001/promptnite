@@ -35,6 +35,12 @@
         -webkit-user-select: none;
         -webkit-tap-highlight-color: transparent;
       }
+      /* iOS zooms into any focused field under 16px. bevy_egui's hidden
+         keyboard input sets no font-size, so it would trigger that zoom. */
+      input,
+      textarea {
+        font-size: 16px;
+      }
     </style>
   </head>
   <body>
