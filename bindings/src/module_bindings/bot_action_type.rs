@@ -21,6 +21,8 @@ pub enum BotAction {
     Dash,
 
     Shield,
+
+    Windup,
 }
 
 impl __sdk::InModule for BotAction {

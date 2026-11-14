@@ -38,7 +38,6 @@ pub struct BotView<'a> {
     /// The match's time limit, in ticks.
     pub max_ticks: u32,
     pub me: Seen,
-    pub cooldown: u32,
     /// Living enemies only.
     pub enemies: &'a [Seen],
     /// Sorted by id.
@@ -55,6 +54,10 @@ pub struct Seen {
     pub stamina: i32,
     /// Whether its shield was up on the last tick.
     pub shielding: bool,
+    /// Ticks until it may start another swing.
+    pub cooldown: u32,
+    /// Ticks until the swing it is winding up lands. 0 when there is none.
+    pub winding: u32,
     /// Distance from the observing bot (0 for `me`).
     pub dist: f32,
 }
@@ -348,7 +351,6 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
     set(ctx, state, "tick", view.tick as i64);
 
     let me = seen_table(ctx, &view.me);
-    set(ctx, me, "cooldown", view.cooldown as i64);
     set(ctx, state, "me", me);
 
     let enemies = Table::new(&ctx);
@@ -419,6 +421,14 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         "shield_speed",
         (view.me.stats.walk_speed * rules::SHIELD_SPEED_FACTOR) as f64,
     );
+    set(ctx, r, "attack_windup", rules::ATTACK_WINDUP_TICKS as i64);
+    set(ctx, r, "knockback", rules::KNOCKBACK as f64);
+    set(
+        ctx,
+        r,
+        "shield_block_stamina_cost",
+        rules::SHIELD_BLOCK_STAMINA_COST as i64,
+    );
     set(ctx, r, "teleporter_radius", rules::TELEPORTER_RADIUS as f64);
     set(ctx, state, "rules", r);
 
@@ -433,6 +443,8 @@ fn seen_table<'gc>(ctx: Context<'gc>, seen: &Seen) -> Table<'gc> {
     set(ctx, table, "hp", seen.hp as i64);
     set(ctx, table, "stamina", seen.stamina as i64);
     set(ctx, table, "shielding", seen.shielding);
+    set(ctx, table, "cooldown", seen.cooldown as i64);
+    set(ctx, table, "winding", seen.winding as i64);
     set(ctx, table, "max_hp", seen.stats.max_hp as i64);
     set(ctx, table, "walk_speed", seen.stats.walk_speed as f64);
     set(ctx, table, "attack_range", seen.stats.attack_range as f64);

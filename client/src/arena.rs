@@ -223,6 +223,8 @@ pub struct Hand {
     /// App time the last swing began.
     swung_at: f32,
     swinging: bool,
+    /// How far the arm is pulled back for a swing being wound up, 0 to 1.
+    wound: f32,
     /// Where the bot faces, on the ground plane.
     facing: Vec3,
 }
@@ -1021,6 +1023,7 @@ pub fn sync_bots(
                                 side: 1.0,
                                 swung_at: f32::NEG_INFINITY,
                                 swinging: false,
+                                wound: 0.0,
                                 facing: Vec3::NEG_Z,
                             },
                             Transform::default(),
@@ -1119,6 +1122,8 @@ const BLADE_LENGTH: f32 = 0.9;
 /// How far round from straight ahead the hand rests, either side.
 const HAND_REST: f32 = 1.1;
 const SWING_SECS: f32 = 0.18;
+/// How much further back than its rest the arm goes for a wind-up.
+const WIND_BACK: f32 = 0.8;
 /// Each swing jolts the body forwards and back, in bot radii and seconds.
 /// Only on screen: the replayed position is left alone.
 const LUNGE: f32 = 0.3;
@@ -1210,10 +1215,20 @@ fn swing_hands(
         }
         hand.swinging = swinging;
 
+        // A wind-up pulls the arm back behind the body, where everybody can
+        // see the swing coming; the swing releases it.
+        let winding = if me.action == BotAction::Windup {
+            1.0
+        } else {
+            0.0
+        };
+        let pull = 1.0 - (-20.0 * time.delta_secs()).exp();
+        hand.wound += (winding - hand.wound) * pull;
+
         // Ease out: fast through the front, settling on the far side.
         let t = ((now - hand.swung_at) / SWING_SECS).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - t).powi(3);
-        let offset = HAND_REST * hand.side * (2.0 * eased - 1.0);
+        let offset = HAND_REST * hand.side * (2.0 * eased - 1.0) * (1.0 + WIND_BACK * hand.wound);
         let yaw = f32::atan2(-hand.facing.x, -hand.facing.z) + offset;
         transform.rotation = Quat::from_rotation_y(yaw);
         let ahead = Quat::from_rotation_y(yaw - offset);
