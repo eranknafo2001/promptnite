@@ -24,12 +24,17 @@ mod teleporter;
 mod theme;
 mod ui;
 
-use bevy::{asset::AssetMetaCheck, log::LogPlugin, prelude::*};
+use bevy::{asset::AssetMetaCheck, log::LogPlugin, prelude::*, winit::WinitSettings};
 
 fn main() {
     let sandbox = sandbox::enabled();
     let mut app = App::new();
     app.insert_resource(ClearColor(theme::BACKGROUND))
+        // Keep running while the canvas has no focus. Bevy's default only
+        // updates on input then, and in a page (itch.io's iframe) the canvas
+        // has no focus until it's tapped, so news from the server, such as
+        // "connected", would sit on screen unseen.
+        .insert_resource(WinitSettings::continuous())
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
