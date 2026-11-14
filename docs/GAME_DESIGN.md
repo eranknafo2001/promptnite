@@ -64,7 +64,8 @@ by number. A bot whose centre comes within a pad's radius (0.9) is taken, in
 that same tick, to the exact centre of the pad with the next number: 1 leads
 to 2, 2 to 3, and the highest number back to the lowest. A removed pad leaves
 a gap in the numbers, which the ring skips. It makes no difference how the bot
-got there, so a bot can shove an enemy onto a pad. The bot that came out is
+got there, so a bot can shove an enemy onto a pad. This is part of moving:
+punches land after it, where the bots have ended up. The bot that came out is
 standing on a pad again, and that pad leaves it alone until it has stepped
 off: from the next tick on it is free to walk away, and walking back on takes
 it one pad further. A lone pad leads nowhere.

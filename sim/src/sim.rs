@@ -253,7 +253,8 @@ pub fn run_match(
             }
         }
         separate(&mut bots, limit);
-        // After the shoving, so a bot can be pushed onto a pad.
+        // After the shoving, so a bot can be pushed onto a pad. Part of
+        // moving: punches land where the bots end up, as they do after a walk.
         teleport(&mut bots, teleporters);
 
         // 3. Attacks, resolved simultaneously: two bots can knock each other out.

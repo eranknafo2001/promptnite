@@ -81,7 +81,7 @@ Define one global function, \`tick(state)\`. The game calls it once per simulati
 
 A bot does exactly one of these per tick: it cannot walk and attack in the same tick.
 
-There is no teleport action. Teleporting happens to a bot: at the end of any tick in which a bot is closer than \`state.rules.teleporter_radius\` to a pad's centre, it is moved to the exact centre of pad \`to\`, whether it walked there or an enemy pushed it there (bots are solid and push each other). To use a pad, walk towards its \`x, y\`; to avoid one, keep \`dist\` above the radius. The pad a bot comes out of does not take it until it has walked off that pad; walking back on then sends it one pad further. To go from pad A to a pad that A does not lead to, ride the ring: step off each pad you come out of and back on. Enemies teleport the same way, so one whose position suddenly changes has gone through a pad.
+There is no teleport action. Teleporting happens to a bot: it is part of moving, so each tick it comes after every bot has walked and before any punch lands. A bot that is then closer than \`state.rules.teleporter_radius\` to a pad's centre is moved to the exact centre of pad \`to\`, whether it walked there or an enemy pushed it there (bots are solid and push each other). To use a pad, walk towards its \`x, y\`; to avoid one, keep \`dist\` above the radius. The pad a bot comes out of does not take it until it has walked off that pad; walking back on then sends it one pad further. To go from pad A to a pad that A does not lead to, ride the ring: step off each pad you come out of and back on. Enemies teleport the same way, so one whose position suddenly changes has gone through a pad.
 
 \`state\` is rebuilt every tick:
 
