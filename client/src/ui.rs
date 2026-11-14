@@ -51,6 +51,17 @@ const MAX_PROMPT_CHARS: usize = 2_000;
 const JOIN_CONTROL_HEIGHT: f32 = 44.0;
 const JOIN_CONTROL_GAP: f32 = 8.0;
 const BOT_PANEL_WIDTH: f32 = 350.0;
+pub const BOT_TAB_HEIGHT: f32 = 152.0;
+
+/// A sharp launch followed by a long settle, staggered by bot order.
+pub fn bot_tab_reveal(elapsed: f32, index: usize) -> f32 {
+    let t = ((elapsed - index as f32 * 0.14) / 0.8).clamp(0.0, 1.0);
+    if t >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2.0_f32.powf(-12.0 * t)
+    }
+}
 /// Match lengths the owner can pick from, in seconds. The server accepts
 /// anything within its own limits (`sim/src/rules.rs`).
 const MATCH_LENGTHS: [u32; 4] = [30, 60, 90, 120];
@@ -335,7 +346,7 @@ fn draw(
             prompt_box(ctx, screen, top, snapshot, error, &mut form, &mut actions);
         }
         (Phase::Prompting, Some(SubmissionStatus::Generating)) => {
-            status_line(ctx, true, "Choosing build…");
+            status_line(ctx, true, "Choosing build…", 0.0);
         }
         (Phase::Prompting, Some(SubmissionStatus::Ready)) => {
             let waiting = snapshot.waiting_on();
@@ -347,11 +358,16 @@ fn draw(
             } else {
                 "Your bot is ready.".into()
             };
-            status_line(ctx, false, &text);
+            status_line(ctx, false, &text, 0.0);
         }
         // The big countdown and the fight speak for themselves.
         (Phase::Countdown | Phase::Fighting, _) => {}
-        (Phase::Results, _) => status_line(ctx, false, "Next round starts in a moment."),
+        (Phase::Results, _) => status_line(
+            ctx,
+            false,
+            "Next round starts in a moment.",
+            if compact { 0.0 } else { BOT_TAB_HEIGHT },
+        ),
     }
     if help != 0.0 {
         prompt_help(ctx, screen, help, &mut form);
@@ -926,9 +942,12 @@ fn bullet(ui: &mut egui::Ui, text: &str) {
 }
 
 /// One line at the bottom while there is nothing to type.
-fn status_line(ctx: &egui::Context, busy: bool, text: &str) {
+fn status_line(ctx: &egui::Context, busy: bool, text: &str, lift: f32) {
     egui::Area::new(egui::Id::new("status_line"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -EDGE - 6.0))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -EDGE - 6.0 - lift),
+        )
         .interactable(false)
         .show(ctx, |ui| {
             pill(ui, |ui| {
@@ -1124,17 +1143,8 @@ fn match_timer(
         egui::FontId::monospace(theme::SIZE_TIMER),
         theme::INK,
     );
-    // In a short landscape window the bot panel reaches the top edge.
-    // Use the gap beside it so the timer cannot cover its heading.
-    let x = screen.left()
-        + EDGE
-        + if screen.height() < 500.0 {
-            BOT_PANEL_WIDTH + EDGE
-        } else {
-            0.0
-        };
     let outer = egui::Rect::from_min_size(
-        egui::pos2(x, screen.top() + EDGE),
+        screen.min + egui::Vec2::splat(EDGE),
         text.size() + PADDING * 2.0,
     );
     theme::panel(painter, outer);
@@ -1247,95 +1257,106 @@ fn fill_of(bot: &BotView) -> egui::Color32 {
     }
 }
 
-/// One panel down the left side, vertically centred, with a row per bot in
-/// the match: colour dot, name and health, the health bar underneath.
-///
-/// Painted directly, like the roster, so the panel doesn't jump a frame when
-/// a name changes length.
+/// Individual tabs docked to the bottom edge during combat and results.
 fn bot_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapshot, replay: &Replay) {
     if matches!(snapshot.game.phase, Phase::Prompting | Phase::Countdown) {
         loadout_cards(painter, screen, snapshot);
         return;
     }
-    const PADDING: egui::Vec2 = egui::vec2(16.0, 14.0);
-    const HEADING: f32 = 30.0;
-    const ROW: f32 = 78.0;
-    /// The last row ends at its bar, not at the next row.
-    const LAST_ROW: f32 = 66.0;
-    const DOT: f32 = 10.0;
-    const BAR: f32 = 6.0;
-
     if replay.bots.is_empty() {
         return;
     }
-    let height = PADDING.y * 2.0 + HEADING + ROW * (replay.bots.len() - 1) as f32 + LAST_ROW;
-    let outer = egui::Rect::from_min_size(
-        egui::pos2(screen.left() + EDGE, screen.center().y - height / 2.0),
-        egui::vec2(BOT_PANEL_WIDTH, height),
-    );
-    theme::panel(painter, outer);
-    let inner = outer.shrink2(PADDING);
-    painter.text(
-        inner.left_top(),
-        egui::Align2::LEFT_TOP,
-        "Bots",
-        theme::bold(theme::SIZE_HEADING),
-        theme::INK,
-    );
+    const GAP: f32 = 12.0;
+    const PADDING: f32 = 14.0;
+    let count = replay.bots.len();
+    let width =
+        ((screen.width() - EDGE * 2.0 - GAP * (count - 1) as f32) / count as f32).min(220.0);
+    let total = width * count as f32 + GAP * (count - 1) as f32;
+    let left = screen.center().x - total / 2.0;
+    let corners = egui::CornerRadius {
+        nw: theme::BOX_RADIUS,
+        ne: theme::BOX_RADIUS,
+        sw: 0,
+        se: 0,
+    };
 
-    for (i, bot) in replay.bots.iter().enumerate() {
-        let top = inner.top() + HEADING + i as f32 * ROW;
+    for (index, bot) in replay.bots.iter().enumerate() {
+        let reveal = if snapshot.game.phase == Phase::Results {
+            1.0
+        } else {
+            bot_tab_reveal(replay.phase_elapsed, index)
+        };
+        let top = screen.bottom() + 4.0 - (BOT_TAB_HEIGHT + 4.0) * reveal;
+        let outer = egui::Rect::from_min_size(
+            egui::pos2(left + index as f32 * (width + GAP), top),
+            egui::vec2(width, BOT_TAB_HEIGHT + 16.0),
+        );
+        painter.rect(
+            outer,
+            corners,
+            theme::PANEL_FILL,
+            egui::Stroke::new(theme::PANEL_STROKE_WIDTH, theme::PANEL_STROKE),
+            egui::StrokeKind::Inside,
+        );
+        let inner = outer.shrink(PADDING);
         let alive = bot.action != BotAction::Dead;
         let ink = if alive { theme::INK } else { theme::INK_MUTED };
-        let name_y = top + 10.0;
-        painter.circle_filled(
-            egui::pos2(inner.left() + DOT / 2.0, name_y),
-            DOT / 2.0,
-            fill_of(bot),
-        );
-        painter.text(
-            egui::pos2(inner.left() + DOT + 8.0, name_y),
-            egui::Align2::LEFT_CENTER,
+        let color = fill_of(bot);
+        let name_y = inner.top() + 8.0;
+        painter.circle_filled(egui::pos2(inner.left() + 4.0, name_y), 4.0, color);
+        // Wrap nowhere and elide long names so adjacent tabs remain separate.
+        let mut job = egui::text::LayoutJob::simple(
             snapshot.name_of(bot.id),
-            egui::FontId::proportional(theme::SIZE_BODY),
+            theme::bold(theme::SIZE_HEADING),
+            ink,
+            (inner.width() - 20.0).max(1.0),
+        );
+        job.wrap.max_rows = 1;
+        let name = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(inner.left() + 16.0, name_y - name.size().y / 2.0),
+            name,
             ink,
         );
         painter.text(
-            egui::pos2(inner.right(), name_y),
-            egui::Align2::RIGHT_CENTER,
+            inner.left_top() + egui::vec2(0.0, 28.0),
+            egui::Align2::LEFT_TOP,
             if alive {
                 format!("{} / {} HP", bot.hp.max(0), bot.max_hp)
             } else {
-                "Out".into()
+                "Knocked out".into()
             },
             egui::FontId::proportional(theme::SIZE_SMALL),
             theme::INK_MUTED,
         );
-
         let bar = egui::Rect::from_min_size(
-            egui::pos2(inner.left(), top + 22.0),
-            egui::vec2(inner.width(), BAR),
+            inner.left_top() + egui::vec2(0.0, 49.0),
+            egui::vec2(inner.width(), 6.0),
         );
-        painter.rect_filled(bar, BAR / 2.0, theme::HP_TRACK);
+        painter.rect_filled(bar, 3.0, theme::HP_TRACK);
         let health = (bot.hp as f32 / bot.max_hp.max(1) as f32).clamp(0.0, 1.0);
         if health > 0.0 {
-            let filled = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, BAR));
-            painter.rect_filled(filled, BAR / 2.0, fill_of(bot));
+            painter.rect_filled(
+                egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * health, bar.height())),
+                3.0,
+                color,
+            );
         }
+        let balanced = [2, 2, 2, 2, 2];
         let points = snapshot
             .submission_of(bot.id)
             .and_then(|s| s.build.as_deref());
-        let balanced = [2, 2, 2, 2, 2];
         if let Some(points) = points
             .filter(|p| p.len() == 5)
             .or_else(|| (bot.id == HOUSE_BOT_ID).then_some(balanced.as_slice()))
         {
             stat_strip(
                 painter,
-                egui::pos2(inner.left(), top + 50.0),
+                inner.left_top() + egui::vec2(0.0, 77.0),
                 inner.width(),
                 points,
                 ink,
+                3,
             );
         }
     }
@@ -1348,10 +1369,12 @@ fn stat_strip(
     width: f32,
     points: &[u32],
     color: egui::Color32,
+    columns: usize,
 ) {
     let stroke = egui::Stroke::new(1.1, color);
     const GAP: f32 = 6.0;
-    let pill_width = (width - GAP * 4.0) / 5.0;
+    let columns = columns.clamp(1, 5);
+    let pill_width = (width - GAP * (columns - 1) as f32) / columns as f32;
     for (i, point) in points.iter().take(5).enumerate() {
         let point = *point as f32;
         let (value, default) = match i {
@@ -1365,11 +1388,23 @@ fn stat_strip(
         let percent = ((value / default - 1.0) * 100.0).round() as i32;
         let text = painter.layout_no_wrap(
             format!("{percent:+}%"),
-            egui::FontId::proportional(theme::SIZE_SMALL),
+            egui::FontId::proportional(if pill_width < 56.0 {
+                11.0
+            } else {
+                theme::SIZE_SMALL
+            }),
             color,
         );
+        let row = i / columns;
+        let in_row = (points.len().min(5) - row * columns).min(columns);
+        let row_width = in_row as f32 * pill_width + GAP * (in_row - 1) as f32;
         let pill = egui::Rect::from_center_size(
-            at + egui::vec2(i as f32 * (pill_width + GAP) + pill_width / 2.0, 0.0),
+            at + egui::vec2(
+                (width - row_width) / 2.0
+                    + (i % columns) as f32 * (pill_width + GAP)
+                    + pill_width / 2.0,
+                row as f32 * 30.0,
+            ),
             egui::vec2(pill_width, 24.0),
         );
         painter.rect_filled(pill, 12.0, theme::FIELD_FILL);
@@ -1476,6 +1511,7 @@ fn loadout_cards(painter: &egui::Painter, screen: egui::Rect, snapshot: &Snapsho
             inner.width(),
             sub.build.as_deref().unwrap_or_default(),
             theme::INK,
+            5,
         );
     } else {
         let text = match sub.map(|s| s.status) {

@@ -450,26 +450,29 @@ fn controls(
         return Ok(());
     }
     let now = time.elapsed_secs_f64();
-    // Touch-accessible stage picker for the phone testing harness.
-    egui::Area::new(egui::Id::new("sandbox_stages"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -112.0))
-        .show(ctx, |ui| {
-            theme::box_frame().show(ui, |ui| {
-                ui.set_width(100.0);
-                ui.menu_button("Test screen", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(240.0)
-                        .show(ui, |ui| {
-                            for (index, (stage, name)) in STAGES.iter().enumerate() {
-                                if ui.selectable_label(sandbox.stage == index, *name).clicked() {
-                                    sandbox.go(*stage, now);
-                                    ui.close();
+    if crate::ui::compact_view(ctx.viewport_rect().width()) {
+        // Touch-accessible stage picker for the phone testing harness.
+        egui::Area::new(egui::Id::new("sandbox_stages"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -112.0))
+            .show(ctx, |ui| {
+                theme::box_frame().show(ui, |ui| {
+                    ui.set_width(100.0);
+                    ui.menu_button("Test screen", |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                for (index, (stage, name)) in STAGES.iter().enumerate() {
+                                    if ui.selectable_label(sandbox.stage == index, *name).clicked()
+                                    {
+                                        sandbox.go(*stage, now);
+                                        ui.close();
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
                 });
             });
-        });
+    }
 
     if !ctx.egui_wants_keyboard_input() {
         let pressed = |key| ctx.input(|input| input.key_pressed(key));
