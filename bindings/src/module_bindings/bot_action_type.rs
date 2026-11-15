@@ -23,6 +23,8 @@ pub enum BotAction {
     Shield,
 
     Windup,
+
+    Block,
 }
 
 impl __sdk::InModule for BotAction {

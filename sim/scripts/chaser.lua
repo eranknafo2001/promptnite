@@ -6,6 +6,7 @@
 --   { action = "walk", dx = <number>, dy = <number> }   direction, any length
 --   { action = "dash", dx = <number>, dy = <number> }   a faster step, costs stamina
 --   { action = "shield", dx = <number>, dy = <number> } block every hit this tick, costs stamina;
+--                                                       locked out for a while after a block;
 --                                                       the direction is optional, a slow step
 --   { action = "attack" }                               start winding up a swing, costs stamina;
 --                                                       it lands a few ticks later on the nearest
@@ -54,7 +55,8 @@ function tick(state)
       if target.dist + rules.walk_speed / tps > reach then
         return away(state, "walk", dx, dy)
       end
-      if me.stamina >= rules.shield_stamina_cost + rules.shield_block_stamina_cost then
+      if me.shield_cooldown == 0
+        and me.stamina >= rules.shield_stamina_cost + rules.shield_block_stamina_cost then
         return { action = "shield" }
       end
       if me.stamina >= rules.dash_stamina_cost and target.dist + rules.dash_speed / tps > reach then

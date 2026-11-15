@@ -72,6 +72,9 @@ pub const SLASH: Color = Color::srgb(1.0, 0.85, 0.65);
 /// The bubble round a bot whose shield is up: a see-through cold blue.
 pub const SHIELD: Color = Color::srgba(0.55, 0.85, 1.0, 0.35);
 
+/// The rings that ripple off a shield when it blocks a hit.
+pub const FX_BLOCK_WAVE: Color = Color::srgb(0.6, 0.9, 1.0);
+
 /// A teleporter pad: its dark dish, and the light of its segments and flame.
 pub const TELEPORTER_METAL: Color = Color::srgb(0.2, 0.23, 0.27);
 pub const TELEPORTER_GLOW: Color = Color::srgb(0.1, 0.88, 1.0);

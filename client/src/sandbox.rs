@@ -459,6 +459,8 @@ fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
             BotAction::Walk
         } else if beat < 0.12 {
             BotAction::Attack
+        } else if i % 2 == 1 && beat < 0.15 {
+            BotAction::Block
         } else if i % 2 == 1 {
             BotAction::Shield
         } else {

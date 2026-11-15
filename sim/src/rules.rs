@@ -108,6 +108,10 @@ pub const SHIELD_STAMINA_COST: i32 = 5;
 /// swinging, so a bot cannot block for ever.
 pub const SHIELD_BLOCK_STAMINA_COST: i32 = 20;
 
+/// Ticks a bot cannot raise its shield after a hit lands on it. A block buys
+/// one hit, then the bot has to get away before the next swing arrives.
+pub const SHIELD_LOCKOUT_TICKS: u32 = 20;
+
 /// A bot behind its shield moves this many times the distance of a `walk`.
 pub const SHIELD_SPEED_FACTOR: f32 = 0.5;
 

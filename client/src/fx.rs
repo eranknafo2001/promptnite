@@ -1,6 +1,7 @@
 //! Effects on top of the replay: when a bot is knocked out it blows up in a
 //! cartoon puff, chunks fly off and the camera shakes. The camera also sways
-//! gently all the time. Hand-rolled particles, no physics.
+//! gently all the time. A blocked hit sends rings rippling off the shield.
+//! Hand-rolled particles, no physics.
 
 use std::collections::HashSet;
 
@@ -22,7 +23,9 @@ pub fn plugin(app: &mut App) {
                 clear_round_effects,
                 deaths.run_if(fighting),
                 dash_dust.run_if(fighting),
+                block_waves.run_if(fighting),
                 dust,
+                waves,
                 puffs,
                 debris,
                 camera.after(arena::point_of_view),
@@ -36,6 +39,7 @@ pub fn plugin(app: &mut App) {
 struct FxAssets {
     sphere: Handle<Mesh>,
     cube: Handle<Mesh>,
+    ring: Handle<Mesh>,
     dead: Handle<StandardMaterial>,
     dust: Handle<StandardMaterial>,
 }
@@ -48,6 +52,7 @@ struct FxState {
     blasts: u32,
     dashing: HashSet<u32>,
     dash_bursts: u32,
+    blocking: HashSet<u32>,
     replay_elapsed: f32,
     /// Camera shake in 0..=1; it moves by trauma², so it dies down sharply.
     trauma: f32,
@@ -73,6 +78,17 @@ struct Dust {
     velocity: Vec3,
 }
 
+/// One ring of a block's soundwave: waits `delay`, then grows from the
+/// shield's edge and fades.
+#[derive(Component)]
+struct Wave {
+    age: f32,
+    delay: f32,
+    /// Radius it starts at and grows to.
+    from: f32,
+    to: f32,
+}
+
 #[derive(Component)]
 struct Chunk {
     age: f32,
@@ -89,6 +105,8 @@ fn setup(
     commands.insert_resource(FxAssets {
         sphere: meshes.add(Sphere::new(1.0)),
         cube: meshes.add(Cuboid::from_length(1.0)),
+        // A thin hoop of radius 1, lying flat.
+        ring: meshes.add(Torus::new(0.9, 1.0)),
         dead: materials.add(theme::BOT_DEAD),
         dust: materials.add(StandardMaterial {
             base_color: theme::FX_DASH_DUST,
@@ -118,7 +136,7 @@ fn fighting(screen: Res<Screen>) -> bool {
     matches!(&*screen, Screen::Room(snapshot) if snapshot.game.phase == Phase::Fighting)
 }
 
-type RoundEffects = Or<(With<Puff>, With<Dust>, With<Chunk>)>;
+type RoundEffects = Or<(With<Puff>, With<Dust>, With<Chunk>, With<Wave>)>;
 
 /// Round effects belong to the fight; portals and the rooftop are separate entities.
 fn clear_round_effects(
@@ -135,6 +153,7 @@ fn clear_round_effects(
     }
     state.dead.clear();
     state.dashing.clear();
+    state.blocking.clear();
     state.replay_elapsed = 0.0;
     state.trauma = 0.0;
 }
@@ -273,6 +292,89 @@ fn dash_dust(
         .filter(|bot| bot.action == BotAction::Dash)
         .map(|bot| bot.id)
         .collect();
+}
+
+/// Rings rippling off the shield of a bot the moment it blocks a hit, like a
+/// gong struck, and a small jolt of the camera.
+fn block_waves(
+    mut commands: Commands,
+    replay: Res<Replay>,
+    assets: Res<FxAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut state: ResMut<FxState>,
+) {
+    for bot in &replay.bots {
+        if bot.action != BotAction::Block || state.blocking.contains(&bot.id) {
+            continue;
+        }
+        state.trauma = (state.trauma + 0.25).min(1.0);
+        // Out from the bubble's edge (`BUBBLE_SIZE` in `arena.rs`).
+        let from = bot.radius * 1.4;
+        for (n, &(delay, reach)) in [(0.0, 4.0), (0.06, 3.2), (0.12, 2.5)].iter().enumerate() {
+            // Its own material, to fade on its own. Added, so it glows.
+            let material = materials.add(StandardMaterial {
+                base_color: (theme::FX_BLOCK_WAVE.to_linear() * 2.0).into(),
+                unlit: true,
+                alpha_mode: AlphaMode::Add,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            });
+            commands.spawn((
+                Wave {
+                    age: 0.0,
+                    delay,
+                    from,
+                    to: bot.radius * reach,
+                },
+                Mesh3d(assets.ring.clone()),
+                MeshMaterial3d(material),
+                // Stacked a little, so the rings read as a wave, not a disc.
+                Transform::from_translation(bot.position + Vec3::Y * bot.radius * 0.25 * n as f32)
+                    .with_scale(Vec3::ZERO),
+                bevy::light::NotShadowCaster,
+            ));
+        }
+    }
+    state.blocking = replay
+        .bots
+        .iter()
+        .filter(|bot| bot.action == BotAction::Block)
+        .map(|bot| bot.id)
+        .collect();
+}
+
+/// Grow each ring fast then slow, thinning and fading as it goes.
+fn waves(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut waves: Query<(
+        Entity,
+        &mut Wave,
+        &mut Transform,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
+) {
+    const LIFE: f32 = 0.45;
+    for (entity, mut wave, mut transform, material) in &mut waves {
+        wave.age += time.delta_secs();
+        let t = (wave.age - wave.delay) / LIFE;
+        if t >= 1.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if t < 0.0 {
+            continue;
+        }
+        let out = 1.0 - (1.0 - t).powi(3);
+        let radius = wave.from + (wave.to - wave.from) * out;
+        // Flattened, and thinner the further it gets.
+        transform.scale = Vec3::new(radius, wave.from * (1.0 - 0.7 * t), radius);
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color.set_alpha((1.0 - t) * (1.0 - t));
+        }
+    }
 }
 
 /// Briefly bloom, then shrink away, preserving a round silhouette.
