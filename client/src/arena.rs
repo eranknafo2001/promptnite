@@ -927,7 +927,7 @@ pub fn sync_bots(
         Option<&MeshMaterial3d<StandardMaterial>>,
     )>,
 ) {
-    if !matches!(&*screen, Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Countdown | Phase::Fighting))
+    if !matches!(&*screen, Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Countdown | Phase::Fighting | Phase::Results))
     {
         for (entity, _, _, _) in &mut bots {
             commands.entity(entity).despawn();
@@ -1283,7 +1283,7 @@ fn fade_slashes(
         // Full strength while its swing lasts, then fade.
         let t = (now - slash.born - SWING_SECS) / SLASH_SECS;
         if t >= 1.0
-            || !matches!(&*screen, Screen::Room(snapshot) if snapshot.game.phase == Phase::Fighting)
+            || !matches!(&*screen, Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Fighting | Phase::Results))
         {
             commands.entity(entity).despawn();
             continue;
