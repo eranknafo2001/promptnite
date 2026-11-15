@@ -120,14 +120,16 @@ fn fighting(screen: Res<Screen>) -> bool {
 
 type RoundEffects = Or<(With<Puff>, With<Dust>, With<Chunk>)>;
 
-/// Round effects belong to the fight; portals and the rooftop are separate entities.
+/// Round effects stay up through Results and clear when the owner starts the
+/// next round. Portals and the rooftop are separate entities.
 fn clear_round_effects(
     mut commands: Commands,
     screen: Res<Screen>,
     effects: Query<Entity, RoundEffects>,
     mut state: ResMut<FxState>,
 ) {
-    if fighting(screen) {
+    if matches!(&*screen, Screen::Room(snapshot) if matches!(snapshot.game.phase, Phase::Fighting | Phase::Results))
+    {
         return;
     }
     for entity in &effects {
