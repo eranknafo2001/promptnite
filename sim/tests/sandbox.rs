@@ -63,6 +63,7 @@ fn a_script_cannot_outgrow_the_heap_cap() {
             shielding: false,
             cooldown: 0,
             winding: 0,
+            shield_cooldown: 0,
             dist: 0.0,
         },
         enemies: &[],

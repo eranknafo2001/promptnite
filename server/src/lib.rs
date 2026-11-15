@@ -304,6 +304,8 @@ pub enum BotAction {
     Shield,
     /// Winding up a swing that has not landed yet.
     Windup,
+    /// Had its shield up and blocked a hit.
+    Block,
 }
 
 #[derive(SpacetimeType, Clone, Debug)]
@@ -1208,6 +1210,7 @@ fn try_start_match(ctx: &ReducerContext, room_id: u32) {
                         sim::ActionKind::Dash => BotAction::Dash,
                         sim::ActionKind::Shield => BotAction::Shield,
                         sim::ActionKind::Windup => BotAction::Windup,
+                        sim::ActionKind::Block => BotAction::Block,
                     },
                 })
                 .collect(),

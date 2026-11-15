@@ -58,6 +58,8 @@ pub struct Seen {
     pub cooldown: u32,
     /// Ticks until the swing it is winding up lands. 0 when there is none.
     pub winding: u32,
+    /// Ticks until it may raise its shield again after a block.
+    pub shield_cooldown: u32,
     /// Distance from the observing bot (0 for `me`).
     pub dist: f32,
 }
@@ -429,6 +431,7 @@ fn build_state<'gc>(ctx: Context<'gc>, view: &BotView) -> Table<'gc> {
         "shield_block_stamina_cost",
         rules::SHIELD_BLOCK_STAMINA_COST as i64,
     );
+    set(ctx, r, "shield_lockout", rules::SHIELD_LOCKOUT_TICKS as i64);
     set(ctx, r, "teleporter_radius", rules::TELEPORTER_RADIUS as f64);
     set(ctx, state, "rules", r);
 
@@ -445,6 +448,7 @@ fn seen_table<'gc>(ctx: Context<'gc>, seen: &Seen) -> Table<'gc> {
     set(ctx, table, "shielding", seen.shielding);
     set(ctx, table, "cooldown", seen.cooldown as i64);
     set(ctx, table, "winding", seen.winding as i64);
+    set(ctx, table, "shield_cooldown", seen.shield_cooldown as i64);
     set(ctx, table, "max_hp", seen.stats.max_hp as i64);
     set(ctx, table, "walk_speed", seen.stats.walk_speed as f64);
     set(ctx, table, "attack_range", seen.stats.attack_range as f64);

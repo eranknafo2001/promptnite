@@ -61,7 +61,7 @@ Kept deliberately small for now. Each simulation tick the script returns one of:
 | --- | --- | --- |
 | walk | `{ action = "walk", dx = 1, dy = 0 }` | One step in direction (dx, dy) |
 | dash | `{ action = "dash", dx = 1, dy = 0 }` | A step 3.6 times as long, for stamina |
-| shield | `{ action = "shield", dx = 1, dy = 0 }` | Block every hit this tick, for stamina; the step is optional and half as long |
+| shield | `{ action = "shield", dx = 1, dy = 0 }` | Block every hit this tick, for stamina; the step is optional and half as long. Not again for 2 seconds after a block |
 | attack | `{ action = "attack" }` | Start winding up a swing, for stamina. It lands 3 ticks later on the nearest enemy in range and throws it back |
 | idle | `{ action = "idle" }` or `nil` | Nothing |
 
@@ -86,8 +86,8 @@ Dash is the original sketch's **run**; stamina is what it costs.
 ```lua
 function tick(state)
   -- state.tick                      current tick, starting at 1
-  -- state.me      { id, x, y, hp, stamina, shielding, cooldown, winding }
-  -- state.enemies { { id, x, y, hp, stamina, shielding, cooldown, winding, dist }, ... }   living enemies only
+  -- state.me      { id, x, y, hp, stamina, shielding, cooldown, winding, shield_cooldown }
+  -- state.enemies { { id, x, y, hp, stamina, shielding, cooldown, winding, shield_cooldown, dist }, ... }   living enemies only
   -- state.teleporters { { id, x, y, dist, to }, ... }   may be empty
   -- state.arena   { half_size }
   -- state.rules   { ticks_per_sec, max_ticks, walk_speed, attack_range,
@@ -95,7 +95,7 @@ function tick(state)
   --                 max_hp, max_stamina,
   --                 stamina_regen, attack_stamina_cost, dash_stamina_cost,
   --                 dash_speed, shield_stamina_cost, shield_block_stamina_cost,
-  --                 shield_speed,
+  --                 shield_lockout, shield_speed,
   --                 teleporter_radius }
   return { action = "walk", dx = 1, dy = 0 }
 end
@@ -133,6 +133,9 @@ Globals persist between ticks, so a script can remember things.
   less than 5 stamina the shield stays down and the action is a walk. Held
   without a break it lasts 2 seconds from full. `shielding` says whether a
   bot's shield was up on the tick before.
+- After a block the shield is locked out for 20 ticks (2 seconds), counted
+  down in `shield_cooldown`; asking for it then is a walk. A block buys one
+  hit: the bot has to get away before the next one.
 - Attacks in the same tick land simultaneously, so a double knockout is
   possible.
 - Last bot standing wins, by knockout or ring-out. At the time limit the bot with the most hp wins; a

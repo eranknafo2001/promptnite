@@ -1071,10 +1071,9 @@ const BUBBLE_SIZE: f32 = 1.4;
 
 fn raise_shields(replay: Res<Replay>, mut bubbles: Query<(&Bubble, &mut Visibility)>) {
     for (bubble, mut visibility) in &mut bubbles {
-        let up = replay
-            .bots
-            .iter()
-            .any(|bot| bot.id == bubble.0 && bot.action == BotAction::Shield);
+        let up = replay.bots.iter().any(|bot| {
+            bot.id == bubble.0 && matches!(bot.action, BotAction::Shield | BotAction::Block)
+        });
         visibility.set_if_neq(if up {
             Visibility::Inherited
         } else {

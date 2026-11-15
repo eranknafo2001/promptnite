@@ -68,6 +68,8 @@ pub enum ActionKind {
     Shield,
     /// Winding up a swing that has not landed yet.
     Windup,
+    /// Had the shield up and a hit landed on it.
+    Block,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -116,6 +118,8 @@ struct Bot {
     winding: u32,
     /// Whether the shield was up on the last tick applied.
     shielding: bool,
+    /// Ticks until the shield can go up again after a block. 0 when it can.
+    shield_cooldown: u32,
     /// Whether a pad takes the bot. Not after a jump, until it has stepped
     /// off the pad it came out of: otherwise it would never stop jumping.
     teleports: bool,
@@ -226,6 +230,7 @@ pub fn run_match(
                 cooldown: 0,
                 winding: 0,
                 shielding: false,
+                shield_cooldown: 0,
                 teleports: true,
                 faulted: lua.is_none(),
                 lua,
@@ -265,6 +270,8 @@ pub fn run_match(
         let limit = rules::BOT_LIMIT;
         for (i, bot) in bots.iter_mut().enumerate() {
             bot.shielding = false;
+            let shield_ready = bot.shield_cooldown == 0;
+            bot.shield_cooldown = bot.shield_cooldown.saturating_sub(1);
             let (dx, dy, wants) = match actions[i] {
                 Action::Walk { dx, dy } => (dx, dy, ActionKind::Walk),
                 Action::Dash { dx, dy } => (dx, dy, ActionKind::Dash),
@@ -278,10 +285,10 @@ pub fn run_match(
             let moving = len > 1e-6;
             let mut step = bot.stats.walk_speed / rules::TICKS_PER_SEC as f32;
             // A dash or a shield is a walk for a bot that cannot pay for it, or
-            // that is winding up a swing.
+            // that is winding up a swing. So is a shield still locked out.
             match wants {
                 _ if bot.winding > 0 => {}
-                ActionKind::Shield if bot.stamina >= rules::SHIELD_STAMINA_COST => {
+                ActionKind::Shield if shield_ready && bot.stamina >= rules::SHIELD_STAMINA_COST => {
                     bot.stamina -= rules::SHIELD_STAMINA_COST;
                     spent[i] = true;
                     bot.shielding = true;
@@ -365,6 +372,8 @@ pub fn run_match(
                 // A shield takes the damage, at a price, and half the shove.
                 bot.stamina = (bot.stamina - rules::SHIELD_BLOCK_STAMINA_COST).max(0);
                 (sx, sy) = (sx / 2.0, sy / 2.0);
+                bot.shield_cooldown = rules::SHIELD_LOCKOUT_TICKS;
+                did[i] = ActionKind::Block;
             } else {
                 bot.hp = (bot.hp - damage[i]).max(0);
                 // A hit that gets through breaks the wind-up of whoever took it.
@@ -428,6 +437,7 @@ fn decide(
             shielding: other.shielding,
             cooldown: other.cooldown,
             winding: other.winding,
+            shield_cooldown: other.shield_cooldown,
             dist: distance(me, other),
         })
         .collect();
@@ -444,6 +454,7 @@ fn decide(
             shielding: me.shielding,
             cooldown: me.cooldown,
             winding: me.winding,
+            shield_cooldown: me.shield_cooldown,
             dist: 0.0,
         },
         enemies: &enemies,
@@ -765,13 +776,13 @@ mod tests {
 
     #[test]
     fn shield_blocks_hits_slows_the_bot_and_burns_stamina() {
-        // Comes in from the railing, then takes every swing on its shield.
+        // Comes in from the railing, then tries to take every swing on its shield.
         let turtle = r#"
             local was = false
             function tick(state)
               assert(state.me.shielding == was)
-              was = state.enemies[1].winding == 1
-              if was then return "shield" end
+              was = state.enemies[1].winding == 1 and state.me.shield_cooldown == 0
+              if state.enemies[1].winding == 1 then return "shield" end
               if state.me.y > 3 then return { action = "walk", dx = 0, dy = -1 } end
             end
         "#;
@@ -783,7 +794,7 @@ mod tests {
             .position(|f| f.bots[1].action == ActionKind::Attack)
             .unwrap();
         let (before, after) = (&frames[block - 1].bots[0], &frames[block].bots[0]);
-        assert_eq!(after.action, ActionKind::Shield);
+        assert_eq!(after.action, ActionKind::Block);
         assert_eq!(after.hp, rules::MAX_HP);
         assert_eq!(
             after.stamina,
@@ -793,6 +804,14 @@ mod tests {
         assert!((after.y - before.y - rules::KNOCKBACK / 2.0).abs() < 1e-3);
         // Blocking is not winning: it is shoved back to the railing and over.
         assert_eq!(outcome.winner, Some(2));
+
+        // After a block the shield stays down for the lockout, asked for or not.
+        let locked = &frames[block + 1..=block + rules::SHIELD_LOCKOUT_TICKS as usize];
+        assert!(
+            locked
+                .iter()
+                .all(|f| !matches!(f.bots[0].action, ActionKind::Shield | ActionKind::Block))
+        );
 
         let creeper = r#"function tick() return { action = "shield", dx = -1, dy = 0 } end"#;
         let outcome = super::run_match(&[spec(1, creeper), spec(2, IDLE)], &[], 0, 1);
@@ -1104,7 +1123,7 @@ mod tests {
                     .filter(|w| w[1].bots[bot].hp < w[0].bots[bot].hp)
                     .count();
                 assert!(hurt >= 3, "seed {seed}: bot {bot} was hit {hurt} times");
-                let blocks = count(&out, bot, ActionKind::Shield);
+                let blocks = count(&out, bot, ActionKind::Block);
                 assert!(blocks >= 3, "seed {seed}: bot {bot} blocked {blocks} times");
             }
         }
