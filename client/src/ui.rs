@@ -497,10 +497,26 @@ fn draw(
                         egui::vec2(0.0, -EDGE - 6.0 - lift),
                     )
                     .show(ctx, |ui| {
-                        if ui
-                            .add_sized([180.0, 44.0], egui::Button::new("Next round"))
-                            .clicked()
-                        {
+                        let button = ui.add_sized([180.0, 44.0], egui::Button::new("Next round"));
+                        // egui only hits a new button a frame or two after it
+                        // shows up, so a click right as the round ends would
+                        // be lost, as would one pressed just before. Letting
+                        // go over the button counts as well.
+                        let let_go_on_it = !ui.is_sizing_pass()
+                            && ui.input(|input| {
+                                input.events.iter().any(|event| {
+                                    matches!(
+                                        event,
+                                        egui::Event::PointerButton {
+                                            pos,
+                                            button: egui::PointerButton::Primary,
+                                            pressed: false,
+                                            ..
+                                        } if button.rect.contains(*pos)
+                                    )
+                                })
+                            });
+                        if button.clicked() || let_go_on_it {
                             actions.write(Action::NextRound);
                         }
                     });
