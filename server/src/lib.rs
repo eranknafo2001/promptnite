@@ -11,6 +11,8 @@
 //!
 //!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --owner clicks Next round--> Prompting
 //!
+//! The owner can also skip the rest of a fight, which shows its results at once.
+//!
 //! The LLM call does *not* happen here: a module's HTTP requests are cut off
 //! after 500 ms. Instead the module pokes an agent worker (`worker/`, a
 //! Cloudflare Worker) and the worker calls back:
@@ -658,6 +660,44 @@ pub fn next_round(ctx: &ReducerContext) -> Result<(), String> {
         phase: Phase::Prompting,
         phase_ends_at: None,
         winner: None,
+        ..room
+    });
+    Ok(())
+}
+
+/// Cut the fight's replay short and go straight to its results. Owner only.
+#[reducer]
+pub fn skip_match(ctx: &ReducerContext) -> Result<(), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.owner != player.id {
+        return Err("Only the room's owner can skip the match".into());
+    }
+    if room.phase != Phase::Fighting {
+        return Err("There is no match to skip right now".into());
+    }
+    // The timer that would have ended the fight knows who won it.
+    let timer = ctx
+        .db
+        .phase_timer()
+        .iter()
+        .find(|timer| {
+            timer.room_id == room.id && timer.round == room.round && timer.to == Phase::Results
+        })
+        .ok_or("The match is already ending")?;
+    ctx.db
+        .phase_timer()
+        .scheduled_id()
+        .delete(timer.scheduled_id);
+    emit(
+        ctx,
+        Level::Info,
+        "match skipped",
+        json!({ "player_id": player.id, "room_id": room.id, "round": room.round }),
+    );
+    ctx.db.room().id().update(Room {
+        phase: Phase::Results,
+        phase_ends_at: None,
+        winner: timer.winner,
         ..room
     });
     Ok(())

@@ -102,6 +102,8 @@ pub enum Action {
     },
     SubmitPrompt(String),
     NextRound,
+    /// Stop watching the fight and show its results.
+    SkipMatch,
     SetRoomSettings {
         match_secs: u32,
         house_bot: bool,
@@ -477,23 +479,21 @@ fn draw(
             status_line(ctx, false, &text, 0.0);
         }
         // The big countdown and the fight speak for themselves.
-        (Phase::Countdown | Phase::Fighting, _) => {}
+        (Phase::Countdown, _) => {}
+        (Phase::Fighting, _) => {
+            if snapshot.i_own_the_room() {
+                let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
+                if owner_button(ctx, "skip_match", "Skip", 120.0, lift) {
+                    actions.write(Action::SkipMatch);
+                }
+            }
+        }
         (Phase::Results, _) => {
             let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
             if snapshot.i_own_the_room() {
-                egui::Area::new(egui::Id::new("next_round"))
-                    .anchor(
-                        egui::Align2::CENTER_BOTTOM,
-                        egui::vec2(0.0, -EDGE - 6.0 - lift),
-                    )
-                    .show(ctx, |ui| {
-                        if ui
-                            .add_sized([180.0, 44.0], egui::Button::new("Next round"))
-                            .clicked()
-                        {
-                            actions.write(Action::NextRound);
-                        }
-                    });
+                if owner_button(ctx, "next_round", "Next round", 180.0, lift) {
+                    actions.write(Action::NextRound);
+                }
             } else {
                 status_line(
                     ctx,
@@ -508,6 +508,21 @@ fn draw(
         prompt_help(ctx, screen, help, &mut form);
     }
     Ok(())
+}
+
+/// A button at the bottom centre, for what only the room's owner decides.
+/// Says whether it was clicked.
+fn owner_button(ctx: &egui::Context, id: &str, label: &str, width: f32, lift: f32) -> bool {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -EDGE - 6.0 - lift),
+        )
+        .show(ctx, |ui| {
+            ui.add_sized([width, 44.0], egui::Button::new(label))
+                .clicked()
+        })
+        .inner
 }
 
 /// First screen, on every launch: who are you, and which room?

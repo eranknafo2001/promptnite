@@ -256,6 +256,7 @@ fn perform(mut actions: MessageReader<Action>, mut sandbox: ResMut<Sandbox>, tim
             Action::Join { .. } => sandbox.go(Stage::Prompting, now),
             Action::SubmitPrompt(_) => sandbox.go(Stage::Generating, now),
             Action::NextRound => sandbox.go(Stage::Prompting, now),
+            Action::SkipMatch => sandbox.go(Stage::Results, now),
             Action::SetRoomSettings {
                 match_secs,
                 house_bot,
