@@ -606,6 +606,8 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
     }
     // Coming back online with a ready script may complete this room.
     try_start_match(ctx, room.id);
+    // Or they skipped the fight and whoever was still watching has left.
+    try_end_fight(ctx, room.id);
     Ok(())
 }
 

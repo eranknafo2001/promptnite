@@ -45,8 +45,8 @@ the teleporters gone.
    two bots counting the house bot, a **countdown** starts.
 4. **Fight** — all bots run their scripts at the same time. Nobody can
    intervene. A player can click **Skip** to stop watching and see the
-   results at once; the others keep watching. When everybody in the room
-   has skipped, the fight ends early for the room.
+   results at once; the others keep watching. When every online player in
+   the room has skipped, the fight ends early for the room.
 5. **Results** — bots, tombstones and combat effects are cleared from the
    arena; teleporters stay in place. The winner and final stats stay on screen until the room owner clicks
    **Next round**, returning everyone to prompting at step 1.
