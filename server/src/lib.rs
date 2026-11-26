@@ -11,6 +11,9 @@
 //!
 //!   Prompting --all scripts ready--> Countdown --3s--> Fighting --match length--> Results --owner clicks Next round--> Prompting
 //!
+//! A player can skip the rest of a fight and see its results at once. The room
+//! itself goes to Results early only when everybody in it has skipped.
+//!
 //! The LLM call does *not* happen here: a module's HTTP requests are cut off
 //! after 500 ms. Instead the module pokes an agent worker (`worker/`, a
 //! Cloudflare Worker) and the worker calls back:
@@ -39,8 +42,8 @@ use log::Level;
 use promptnite_sim::{self as sim, rules};
 use serde_json::{Value, json};
 use spacetimedb::{
-    Identity, ProcedureContext, ReducerContext, ScheduleAt, SpacetimeType, Table, TimeDuration,
-    Timestamp, ViewContext,
+    Identity, LocalReadOnly, ProcedureContext, ReducerContext, ScheduleAt, SpacetimeType, Table,
+    TimeDuration, Timestamp, ViewContext,
     http::{Request, Timeout},
     procedure, reducer, table, view,
 };
@@ -142,6 +145,10 @@ pub struct Player {
     /// no two online players of a room share one.
     #[default(0)]
     edge: u32,
+    /// They skipped the fight their room is replaying. Cleared when the room
+    /// reaches `Results`.
+    #[default(false)]
+    skipped: bool,
 }
 
 #[derive(SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -424,6 +431,7 @@ pub struct PhaseTimer {
     #[auto_inc]
     scheduled_id: u64,
     scheduled_at: ScheduleAt,
+    #[index(btree)]
     room_id: u32,
     round: u32,
     to: Phase,
@@ -453,6 +461,8 @@ pub fn client_disconnected(ctx: &ReducerContext) {
         // is kept, so a page reload during prompting doesn't lose the script
         // if they come back to the same room.
         try_start_match(ctx, room_id);
+        // Nor do they keep the others in a fight everybody else skipped.
+        try_end_fight(ctx, room_id);
     }
 }
 
@@ -486,6 +496,7 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
                 room_id: NO_ROOM,
                 online: false,
                 edge: 0,
+                skipped: false,
             })
         });
 
@@ -584,14 +595,19 @@ pub fn join(ctx: &ReducerContext, name: String, room: String) -> Result<(), Stri
         room_id: room.id,
         online: true,
         edge,
+        // Skipping a fight in one room says nothing about another's.
+        skipped: player.skipped && left == room.id,
         ..player
     });
     if left != room.id {
         // The room they left may have been waiting only for them.
         try_start_match(ctx, left);
+        try_end_fight(ctx, left);
     }
     // Coming back online with a ready script may complete this room.
     try_start_match(ctx, room.id);
+    // Or they skipped the fight and whoever was still watching has left.
+    try_end_fight(ctx, room.id);
     Ok(())
 }
 
@@ -660,6 +676,28 @@ pub fn next_round(ctx: &ReducerContext) -> Result<(), String> {
         winner: None,
         ..room
     });
+    Ok(())
+}
+
+/// Stop watching the fight and see its results now. The others keep
+/// watching; the room moves on once everybody in it has skipped.
+#[reducer]
+pub fn skip_match(ctx: &ReducerContext) -> Result<(), String> {
+    let (player, room) = player_in_room(ctx)?;
+    if room.phase != Phase::Fighting {
+        return Err("There is no match to skip right now".into());
+    }
+    emit(
+        ctx,
+        Level::Info,
+        "match skipped",
+        json!({ "player_id": player.id, "room_id": room.id, "round": room.round }),
+    );
+    ctx.db.player().identity().update(Player {
+        skipped: true,
+        ..player
+    });
+    try_end_fight(ctx, room.id);
     Ok(())
 }
 
@@ -1311,17 +1349,69 @@ pub fn advance_phase(ctx: &ReducerContext, timer: PhaseTimer) -> Result<(), Stri
                 timer.winner,
             );
         }
-        Phase::Results => {
-            ctx.db.room().id().update(Room {
-                phase: Phase::Results,
-                phase_ends_at: None,
-                winner: timer.winner,
-                ..room
-            });
-        }
+        Phase::Results => show_results(ctx, room, timer.winner),
         Phase::Prompting | Phase::Countdown => {}
     }
     Ok(())
+}
+
+/// The timer that ends the fight a room is replaying. It knows who won.
+fn fight_end(db: &LocalReadOnly, room: &Room) -> Option<PhaseTimer> {
+    db.phase_timer()
+        .room_id()
+        .filter(room.id)
+        .find(|timer| timer.round == room.round && timer.to == Phase::Results)
+}
+
+/// End a room's fight early if everybody who is there has skipped it.
+fn try_end_fight(ctx: &ReducerContext, room_id: u32) {
+    let Some(room) = ctx.db.room().id().find(room_id) else {
+        return;
+    };
+    let present: Vec<Player> = ctx
+        .db
+        .player()
+        .room_id()
+        .filter(room_id)
+        .filter(|player| player.online)
+        .collect();
+    // An empty room plays its fight out, for whoever comes back to it.
+    if room.phase != Phase::Fighting
+        || present.is_empty()
+        || !present.iter().all(|player| player.skipped)
+    {
+        return;
+    }
+    let Some(timer) = fight_end(&ctx.as_read_only().db, &room) else {
+        return;
+    };
+    ctx.db
+        .phase_timer()
+        .scheduled_id()
+        .delete(timer.scheduled_id);
+    show_results(ctx, room, timer.winner);
+}
+
+fn show_results(ctx: &ReducerContext, room: Room, winner: Option<u32>) {
+    let skipped: Vec<Player> = ctx
+        .db
+        .player()
+        .room_id()
+        .filter(room.id)
+        .filter(|player| player.skipped)
+        .collect();
+    for player in skipped {
+        ctx.db.player().identity().update(Player {
+            skipped: false,
+            ..player
+        });
+    }
+    ctx.db.room().id().update(Room {
+        phase: Phase::Results,
+        phase_ends_at: None,
+        winner,
+        ..room
+    });
 }
 
 // Logging ------------------------------------------------------------------
@@ -1482,7 +1572,19 @@ fn callers_room(ctx: &ViewContext) -> Option<Room> {
 #[view(accessor = my_room, public)]
 fn my_room(ctx: &ViewContext) -> Option<Room> {
     let room = callers_room(ctx)?;
+    let skipped = my_player(ctx).is_some_and(|player| player.skipped);
     Some(match room.phase {
+        // Whoever skipped the fight already sees how it ended. `phase_ends_at`
+        // stays, which is how their client tells the fight is still on for
+        // the others: real results have none.
+        Phase::Fighting if skipped => {
+            let winner = fight_end(&ctx.db, &room).and_then(|timer| timer.winner);
+            Room {
+                phase: Phase::Results,
+                winner,
+                ..room
+            }
+        }
         // How long the match lasts says whether somebody gets knocked out.
         Phase::Countdown => Room {
             match_ticks: 0,

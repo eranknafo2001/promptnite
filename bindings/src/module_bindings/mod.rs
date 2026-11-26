@@ -36,6 +36,7 @@ pub mod room_submissions_table;
 pub mod room_teleporters_table;
 pub mod room_type;
 pub mod set_room_settings_reducer;
+pub mod skip_match_reducer;
 pub mod submission_status_type;
 pub mod submission_type;
 pub mod submit_prompt_reducer;
@@ -71,6 +72,7 @@ pub use room_submissions_table::*;
 pub use room_teleporters_table::*;
 pub use room_type::Room;
 pub use set_room_settings_reducer::set_room_settings;
+pub use skip_match_reducer::skip_match;
 pub use submission_status_type::SubmissionStatus;
 pub use submission_type::Submission;
 pub use submit_prompt_reducer::submit_prompt;
@@ -110,6 +112,7 @@ pub enum Reducer {
         match_secs: u32,
         house_bot: bool,
     },
+    SkipMatch,
     SubmitPrompt {
         prompt: String,
     },
@@ -129,6 +132,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::NextRound => "next_round",
             Reducer::RemoveTeleporter { .. } => "remove_teleporter",
             Reducer::SetRoomSettings { .. } => "set_room_settings",
+            Reducer::SkipMatch => "skip_match",
             Reducer::SubmitPrompt { .. } => "submit_prompt",
             _ => unreachable!(),
         }
@@ -177,6 +181,7 @@ impl __sdk::Reducer for Reducer {
                 match_secs: match_secs.clone(),
                 house_bot: house_bot.clone(),
             }),
+            Reducer::SkipMatch => __sats::bsatn::to_vec(&skip_match_reducer::SkipMatchArgs {}),
             Reducer::SubmitPrompt { prompt } => {
                 __sats::bsatn::to_vec(&submit_prompt_reducer::SubmitPromptArgs {
                     prompt: prompt.clone(),

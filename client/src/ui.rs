@@ -102,6 +102,9 @@ pub enum Action {
     },
     SubmitPrompt(String),
     NextRound,
+    /// Stop watching the fight and show its results. The room moves on
+    /// once everybody has.
+    SkipMatch,
     SetRoomSettings {
         match_secs: u32,
         house_bot: bool,
@@ -281,6 +284,15 @@ impl Snapshot {
                 self.submission_of(player.id)
                     .is_none_or(|s| s.status != SubmissionStatus::Ready)
             })
+            .map(|player| player.name.as_str())
+            .collect()
+    }
+
+    /// Names of the online players who have not skipped the fight.
+    fn still_watching(&self) -> Vec<&str> {
+        self.players
+            .iter()
+            .filter(|player| player.online && !player.skipped)
             .map(|player| player.name.as_str())
             .collect()
     }
@@ -477,23 +489,29 @@ fn draw(
             status_line(ctx, false, &text, 0.0);
         }
         // The big countdown and the fight speak for themselves.
-        (Phase::Countdown | Phase::Fighting, _) => {}
+        (Phase::Countdown, _) => {}
+        (Phase::Fighting, _) => {
+            let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
+            if bottom_button(ctx, "skip_match", "Skip", 120.0, lift) {
+                actions.write(Action::SkipMatch);
+            }
+        }
         (Phase::Results, _) => {
             let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
-            if snapshot.i_own_the_room() {
-                egui::Area::new(egui::Id::new("next_round"))
-                    .anchor(
-                        egui::Align2::CENTER_BOTTOM,
-                        egui::vec2(0.0, -EDGE - 6.0 - lift),
-                    )
-                    .show(ctx, |ui| {
-                        if ui
-                            .add_sized([180.0, 44.0], egui::Button::new("Next round"))
-                            .clicked()
-                        {
-                            actions.write(Action::NextRound);
-                        }
-                    });
+            if game.phase_ends_at.is_some() {
+                // We skipped ahead: for the room the fight is still on, which
+                // the server marks by leaving the fight's end time on.
+                let watching = snapshot.still_watching();
+                let text = if watching.is_empty() {
+                    "Waiting for the fight to finish…".into()
+                } else {
+                    format!("Waiting for {} to finish watching…", watching.join(", "))
+                };
+                status_line(ctx, false, &text, lift);
+            } else if snapshot.i_own_the_room() {
+                if bottom_button(ctx, "next_round", "Next round", 180.0, lift) {
+                    actions.write(Action::NextRound);
+                }
             } else {
                 status_line(
                     ctx,
@@ -508,6 +526,20 @@ fn draw(
         prompt_help(ctx, screen, help, &mut form);
     }
     Ok(())
+}
+
+/// A button at the bottom centre. Says whether it was clicked.
+fn bottom_button(ctx: &egui::Context, id: &str, label: &str, width: f32, lift: f32) -> bool {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -EDGE - 6.0 - lift),
+        )
+        .show(ctx, |ui| {
+            ui.add_sized([width, 44.0], egui::Button::new(label))
+                .clicked()
+        })
+        .inner
 }
 
 /// First screen, on every launch: who are you, and which room?
