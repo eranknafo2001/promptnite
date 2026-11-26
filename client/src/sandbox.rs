@@ -74,6 +74,8 @@ struct Sandbox {
     since: f64,
     /// Show the room as its owner (with the settings) or as a guest.
     owner: bool,
+    /// We skipped the fight that is on; the others are still watching it.
+    skipped: bool,
     match_secs: u32,
     house_bot: bool,
     teleporters: Vec<Teleporter>,
@@ -89,6 +91,7 @@ impl Sandbox {
     fn go(&mut self, stage: Stage, now: f64) {
         self.stage = STAGES.iter().position(|(s, _)| *s == stage).unwrap();
         self.since = now;
+        self.skipped = false;
     }
 }
 
@@ -97,6 +100,7 @@ pub fn plugin(app: &mut App) {
         stage: 4,
         since: 0.0,
         owner: true,
+        skipped: false,
         match_secs: 30,
         house_bot: true,
         teleporters: [(-6.0, -5.0), (6.0, 5.0), (-5.5, 6.0)]
@@ -256,7 +260,7 @@ fn perform(mut actions: MessageReader<Action>, mut sandbox: ResMut<Sandbox>, tim
             Action::Join { .. } => sandbox.go(Stage::Prompting, now),
             Action::SubmitPrompt(_) => sandbox.go(Stage::Generating, now),
             Action::NextRound => sandbox.go(Stage::Prompting, now),
-            Action::SkipMatch => sandbox.go(Stage::Results, now),
+            Action::SkipMatch => sandbox.skipped = true,
             Action::SetRoomSettings {
                 match_secs,
                 house_bot,
@@ -319,11 +323,14 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
         room_id: ROOM,
         online: true,
         edge,
+        skipped: id == ME && sandbox.skipped,
     };
     let players = vec![player(ME, "Ada", 0), player(2, "Bo", 1), player(3, "Cy", 2)];
 
     let phase = match stage {
         Stage::Countdown => Phase::Countdown,
+        // Like the server: whoever skipped is shown the results already.
+        Stage::Fighting if sandbox.skipped => Phase::Results,
         Stage::Fighting => Phase::Fighting,
         Stage::Results => Phase::Results,
         _ => Phase::Prompting,
@@ -376,7 +383,7 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
             round: ROUND,
             phase,
             match_ticks: FIGHT_SECS as u32 * TICKS_PER_SEC,
-            winner: (stage == Stage::Results).then_some(ME),
+            winner: (phase == Phase::Results).then_some(ME),
             ticks_per_sec: TICKS_PER_SEC,
             arena_half_size: 10.0,
             bot_radius: 0.5,
@@ -405,8 +412,8 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
 fn fight(sandbox: Res<Sandbox>, mut replay: ResMut<Replay>) {
     let t = match sandbox.stage() {
         Stage::Countdown => 0.0,
-        Stage::Fighting => replay.phase_elapsed.min(FIGHT_SECS),
-        Stage::Results => FIGHT_SECS,
+        Stage::Fighting if !sandbox.skipped => replay.phase_elapsed.min(FIGHT_SECS),
+        Stage::Fighting | Stage::Results => FIGHT_SECS,
         _ => return,
     };
     let counting_down = sandbox.stage() == Stage::Countdown;

@@ -51,6 +51,7 @@ impl __sdk::__query_builder::HasCols for PhaseTimer {
 ///
 /// Provides typed access to indexed columns for query building.
 pub struct PhaseTimerIxCols {
+    pub room_id: __sdk::__query_builder::IxCol<PhaseTimer, u32>,
     pub scheduled_id: __sdk::__query_builder::IxCol<PhaseTimer, u64>,
 }
 
@@ -58,6 +59,7 @@ impl __sdk::__query_builder::HasIxCols for PhaseTimer {
     type IxCols = PhaseTimerIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         PhaseTimerIxCols {
+            room_id: __sdk::__query_builder::IxCol::new(table_name, "room_id"),
             scheduled_id: __sdk::__query_builder::IxCol::new(table_name, "scheduled_id"),
         }
     }

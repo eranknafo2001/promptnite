@@ -13,6 +13,7 @@ pub struct Player {
     pub room_id: u32,
     pub online: bool,
     pub edge: u32,
+    pub skipped: bool,
 }
 
 impl __sdk::InModule for Player {
@@ -29,6 +30,7 @@ pub struct PlayerCols {
     pub room_id: __sdk::__query_builder::Col<Player, u32>,
     pub online: __sdk::__query_builder::Col<Player, bool>,
     pub edge: __sdk::__query_builder::Col<Player, u32>,
+    pub skipped: __sdk::__query_builder::Col<Player, bool>,
 }
 
 impl __sdk::__query_builder::HasCols for Player {
@@ -41,6 +43,7 @@ impl __sdk::__query_builder::HasCols for Player {
             room_id: __sdk::__query_builder::Col::new(table_name, "room_id"),
             online: __sdk::__query_builder::Col::new(table_name, "online"),
             edge: __sdk::__query_builder::Col::new(table_name, "edge"),
+            skipped: __sdk::__query_builder::Col::new(table_name, "skipped"),
         }
     }
 }
