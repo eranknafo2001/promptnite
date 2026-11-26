@@ -17,7 +17,10 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use promptnite_bindings::{sdk::Identity, *};
+use promptnite_bindings::{
+    sdk::{Identity, Timestamp},
+    *,
+};
 
 use crate::{
     arena::{self, BotView, Replay},
@@ -389,7 +392,9 @@ fn snapshot(sandbox: &Sandbox, stage: Stage) -> Snapshot {
             bot_radius: 0.5,
             attack_range: 1.5,
             max_hp: 100,
-            phase_ends_at: None,
+            // Like the server: only results we skipped ahead to keep one.
+            phase_ends_at: (stage == Stage::Fighting && sandbox.skipped)
+                .then_some(Timestamp::UNIX_EPOCH),
         },
         faults: vec![MatchFault {
             id: 1,

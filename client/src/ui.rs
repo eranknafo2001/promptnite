@@ -498,10 +498,15 @@ fn draw(
         }
         (Phase::Results, _) => {
             let lift = if compact { 0.0 } else { BOT_TAB_HEIGHT };
-            if snapshot.me.skipped {
-                // We skipped ahead: for the room the fight is still on.
+            if game.phase_ends_at.is_some() {
+                // We skipped ahead: for the room the fight is still on, which
+                // the server marks by leaving the fight's end time on.
                 let watching = snapshot.still_watching();
-                let text = format!("Waiting for {} to finish watching…", watching.join(", "));
+                let text = if watching.is_empty() {
+                    "Waiting for the fight to finish…".into()
+                } else {
+                    format!("Waiting for {} to finish watching…", watching.join(", "))
+                };
                 status_line(ctx, false, &text, lift);
             } else if snapshot.i_own_the_room() {
                 if bottom_button(ctx, "next_round", "Next round", 180.0, lift) {

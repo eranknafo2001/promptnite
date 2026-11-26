@@ -1574,12 +1574,13 @@ fn my_room(ctx: &ViewContext) -> Option<Room> {
     let room = callers_room(ctx)?;
     let skipped = my_player(ctx).is_some_and(|player| player.skipped);
     Some(match room.phase {
-        // Whoever skipped the fight already sees how it ended.
+        // Whoever skipped the fight already sees how it ended. `phase_ends_at`
+        // stays, which is how their client tells the fight is still on for
+        // the others: real results have none.
         Phase::Fighting if skipped => {
             let winner = fight_end(&ctx.db, &room).and_then(|timer| timer.winner);
             Room {
                 phase: Phase::Results,
-                phase_ends_at: None,
                 winner,
                 ..room
             }
